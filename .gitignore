@@ -3,9 +3,6 @@
 [Oo]bj/
 [Dd]ist/
 
-# Local/private library content: retain locally, never publish by default.
-src/Assets/BundledUserSymbols.SchLib
-
 # Developer tooling
 .vs/
 *.user

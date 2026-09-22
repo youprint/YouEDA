@@ -72,15 +72,13 @@ Copy the complete `dist\YouEDA` folder to the target computer. Do not copy only 
 5. Use **Open in Altium** to load the shared `youeda.PcbLib` and `youeda.SchLib` files in Altium Designer. If a library is already open and locked in Altium, close it before updating it in YouEDA.
 6. Inspect the imported footprint, symbol polarity/pin mapping, model orientation, and manufacturer datasheet before release.
 
-## Optional private symbol catalog
+## Bundled symbol catalog
 
-The developer’s bundled `BundledUserSymbols.SchLib` is intentionally ignored by this public repository because it may contain private/custom library artwork. The application builds without it and falls back to EasyEDA-generated symbols when needed. To use your own approved catalog, place a compatible native Altium library at:
+`src\Assets\BundledUserSymbols.SchLib` is included with this repository and is copied into the application during build/publish. It provides the common-component symbols that YouEDA matches before falling back to EasyEDA-generated symbols. If you distribute a modified catalog, ensure that you have permission to redistribute its artwork and pin definitions.
 
 ```text
 src\Assets\BundledUserSymbols.SchLib
 ```
-
-then rebuild/publish. Do not commit or publish third-party/proprietary symbol libraries unless their license allows redistribution.
 
 ## Third-party notices
 
