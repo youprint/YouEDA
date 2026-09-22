@@ -1,0 +1,16 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+[Dd]ist/
+
+# Local/private library content: retain locally, never publish by default.
+src/Assets/BundledUserSymbols.SchLib
+
+# Developer tooling
+.vs/
+*.user
+*.suo
+*.log
+
+# The upstream source is cloned locally as documented in the README.
+third_party/AltiumSharp/

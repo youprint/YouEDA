@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- AltiumSharp v2 / OriginalCircuit.Altium currently targets .NET 10. -->
+    <TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>YouEDA</AssemblyName>
+    <Product>YouEDA</Product>
+  </PropertyGroup>
+  <!-- AltiumSharp v2's repository currently contains the required writer; it is not yet available from NuGet. -->
+  <PropertyGroup>
+    <AltiumSharpRoot Condition="'$(AltiumSharpRoot)' == ''">$(MSBuildProjectDirectory)\..\third_party\AltiumSharp</AltiumSharpRoot>
+    <AltiumSharpSource Condition="'$(AltiumSharpSource)' == ''">$(AltiumSharpRoot)\src\OriginalCircuit.Altium\OriginalCircuit.Altium.csproj</AltiumSharpSource>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(AltiumSharpSource)" Condition="Exists('$(AltiumSharpSource)')" />
+    <ProjectReference Include="$(AltiumSharpRoot)\shared\OriginalCircuit.Eda.Abstractions\src\OriginalCircuit.Eda.Abstractions\OriginalCircuit.Eda.Abstractions.csproj" />
+    <!-- Altium-authored PcbLib used as a metadata/section template for generated libraries. -->
+    <Content Include="$(AltiumSharpRoot)\TestData\PCB - DIODES - DIODES INC SDT10A45P5.PCBLIB" Link="Templates\AltiumTemplate.PcbLib">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- An Altium-authored schematic library preserves the section layout expected by Altium Designer. -->
+    <Content Include="$(AltiumSharpRoot)\TestData\SCH - RF - MIXER - AD ADL5801.SchLib" Link="Templates\AltiumTemplate.SchLib">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- One bundled native library; runtime matching never reads C:\altium-library. -->
+    <Content Include="Assets\BundledUserSymbols.SchLib" Link="Symbols\BundledUserSymbols.SchLib" Condition="Exists('Assets\BundledUserSymbols.SchLib')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>
