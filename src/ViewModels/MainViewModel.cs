@@ -19,6 +19,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly string _userSymbolDirectory = Path.Combine(AppContext.BaseDirectory, "Symbols", "BundledUserSymbols.SchLib");
     private string _statusText = "Enter an LCSC code, then search the public EasyEDA component library.";
     private string _busy = "";
+    private string _selectedExportFormat = "Both";
     private ComponentSearchRow? _selectedResult;
 
     public ObservableCollection<ComponentSearchRow> Results { get; } = [];
@@ -26,6 +27,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string BatchPartNumbers { get => _batchPartNumbers; set { _batchPartNumbers = value; On(); RefreshCommands(); } }
     public string OutputDirectory { get => _outputDirectory; set { _outputDirectory = value; On(); RefreshCommands(); } }
     public string UserSymbolDirectory => _userSymbolDirectory;
+    public IReadOnlyList<string> ExportFormats { get; } = ["Altium", "KiCad", "Both"];
+    public string SelectedExportFormat { get => _selectedExportFormat; set { _selectedExportFormat = value; On(); } }
     public string StatusText { get => _statusText; private set { _statusText = value; On(); } }
     public bool IsBusy => !string.IsNullOrEmpty(_busy);
     public bool CanSearch => !IsBusy && RequestedPartNumbers().Any();
@@ -96,22 +99,34 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Directory.CreateDirectory(OutputDirectory);
             var chosen = Results.Where(row => row.IncludeFootprint && row.ParsedComponent is not null).ToArray();
             var files = new List<string>();
+            var failures = new List<string>();
             for (var index = 0; index < chosen.Length; index++)
             {
-                StatusText = $"Generating {chosen[index].PartNumber} ({index + 1}/{chosen.Length})…";
-                var component = chosen[index].ParsedComponent!;
-                var resolver = new UserSymbolLibraryResolver();
-                var matchingSymbol = resolver.Resolve(component, UserSymbolDirectory, null);
-                // IC/MCU families always use authoritative EasyEDA P pin records. Other
-                // component families stay in the user's symbol library and prompt on ambiguity.
-                var selectedSymbol = matchingSymbol;
-                if (selectedSymbol is null && !resolver.MustGenerateFromEasyEda(component))
-                    selectedSymbol = PromptForBundledSymbol(component);
-                else if (selectedSymbol is null)
-                    StatusText = $"{component.LcscPartNumber}: generating its schematic symbol from EasyEDA pin data.";
-                files.Add(await new LibraryExporter().ExportImportPlanAsync(component, OutputDirectory, chosen[index].Include3D, UserSymbolDirectory, selectedSymbol));
+                try
+                {
+                    StatusText = $"Generating {chosen[index].PartNumber} ({index + 1}/{chosen.Length})…";
+                    var component = chosen[index].ParsedComponent!;
+                    var resolver = new UserSymbolLibraryResolver();
+                    var selectedSymbol = resolver.Resolve(component, UserSymbolDirectory, null);
+                    // IC/MCU families use their EasyEDA pins; ambiguous generic matches prompt.
+                    if (selectedSymbol is null && !resolver.MustGenerateFromEasyEda(component))
+                        selectedSymbol = PromptForBundledSymbol(component);
+                    var format = SelectedExportFormat switch
+                    {
+                        "KiCad" => LibraryExporter.OutputFormat.KiCad,
+                        "Both" => LibraryExporter.OutputFormat.Both,
+                        _ => LibraryExporter.OutputFormat.Altium
+                    };
+                    files.Add(await new LibraryExporter().ExportImportPlanAsync(component, OutputDirectory,
+                        chosen[index].Include3D, UserSymbolDirectory, selectedSymbol, format: format));
+                }
+                catch (Exception exception)
+                {
+                    failures.Add($"{chosen[index].PartNumber}: {exception.Message}");
+                }
             }
-            StatusText = $"Updated youeda.PcbLib and youeda.SchLib with {files.Count} component(s).";
+            StatusText = $"Updated {SelectedExportFormat} libraries with {files.Count}/{chosen.Length} component(s) in {OutputDirectory}." +
+                (failures.Count == 0 ? "" : $" Failed: {string.Join("; ", failures.Take(3))}");
         }
         catch (Exception exception) { StatusText = "Library generation error: " + exception.Message; }
         finally { _busy = ""; RefreshCommands(); }
