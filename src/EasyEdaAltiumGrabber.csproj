@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>YouEDA</AssemblyName>
     <Product>YouEDA</Product>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
   <!-- AltiumSharp v2's repository currently contains the required writer; it is not yet available from NuGet. -->
   <PropertyGroup>
@@ -13,6 +16,8 @@
     <AltiumSharpSource Condition="'$(AltiumSharpSource)' == ''">$(AltiumSharpRoot)\src\OriginalCircuit.Altium\OriginalCircuit.Altium.csproj</AltiumSharpSource>
   </PropertyGroup>
   <ItemGroup>
+    <!-- The CLI is a separate nested project; its generated obj sources must not enter WPF compilation. -->
+    <Compile Remove="YouEDA.Cli\**\*.cs" />
     <ProjectReference Include="$(AltiumSharpSource)" Condition="Exists('$(AltiumSharpSource)')" />
     <ProjectReference Include="$(AltiumSharpRoot)\shared\OriginalCircuit.Eda.Abstractions\src\OriginalCircuit.Eda.Abstractions\OriginalCircuit.Eda.Abstractions.csproj" />
     <!-- Altium-authored PcbLib used as a metadata/section template for generated libraries. -->
