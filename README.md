@@ -13,9 +13,11 @@ Altium output uses two native shared libraries:
 - `youeda.PcbLib` — footprint, copper pads, silkscreen, and embedded STEP model when EasyEDA supplies one.
 - `youeda.SchLib` — schematic symbol selected from the bundled common-symbol catalog, or generated from EasyEDA pin records for IC/MCU-class parts.
 
-Each Altium symbol carries a native `PCBLIB` model link to the matching LCSC-named footprint. The schematic library uses a light sheet background and visible designator/comment labels; resistors and capacitors store the EasyEDA value as a hidden `Value` parameter referenced by the comment, while diodes use the manufacturer part number when available. Re-import an existing part to refresh these fields in an older `youeda.SchLib`.
+Each Altium footprint is named from EasyEDA's `packageDetail.title` (falling back to the LCSC number if no title is supplied), and the schematic symbol's native `PCBLIB` model link uses that same name. The schematic library uses a light sheet background and visible designator/comment labels; resistors and capacitors store the EasyEDA value as a hidden `Value` parameter referenced by the comment, while diodes use the manufacturer part number when available. Re-import an existing part to refresh these fields and rename an older LCSC-named footprint.
 
-Each import **upserts** the LCSC part number into those same two files. Existing components stay in place; importing the same LCSC code again refreshes only that component.
+For a part without a suitable bundled schematic template, the EasyEDA fallback generates a framed symbol from its pin records. Pin names sit inside the body, pin numbers outside, and the designator and comment are placed above and below the frame.
+
+Each import **upserts** the LCSC part number in the SchLib and its EasyEDA-named footprint in the PcbLib. Multiple LCSC parts with the same EasyEDA footprint title share one PcbLib entry; re-importing one refreshes that shared footprint.
 
 KiCad output uses `youeda.kicad_sym`, `youeda.pretty/<LCSC>.kicad_mod`, and, when available, `youeda.3dshapes/<LCSC>.step`. The output folder also gets `sym-lib-table` and `fp-lib-table` if those files do not already exist. Re-importing a part replaces its symbol and footprint without disturbing other parts. For portable 3D links, use the output folder as the KiCad project folder, or copy these files and folders together into a project folder.
 

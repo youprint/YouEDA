@@ -27,7 +27,7 @@ public sealed class AltiumV2Exporter
         // Catch writer regressions before reporting a file as generated. This validates its compound
         // structure and all serialized primitive records with the same reader implementation.
         var verified = (PcbLibrary)await AltiumLibrary.OpenPcbLibAsync(path);
-        if (!verified.Contains(source.LcscPartNumber) ||
+        if (!verified.Contains(AltiumFootprintNaming.NameFor(source)) ||
             (model is not null && !verified.Models.Any(item => item.Name == model.FileName)))
             throw new InvalidDataException("The shared PcbLib did not pass post-write verification.");
         return path;
@@ -56,13 +56,18 @@ public sealed class AltiumV2Exporter
     /// <summary>Mutates an already-open shared PcbLib. Caller controls checkpoint saves.</summary>
     public void Upsert(PcbLibrary library, EdaComponent source, Downloaded3dModel? model = null)
     {
+        var footprintName = AltiumFootprintNaming.NameFor(source);
+        // Remove an entry written by older YouEDA versions under its LCSC number when this part
+        // is re-imported, then upsert the EasyEDA-named footprint. Identical package names are
+        // shared library entries rather than duplicate per-part footprints.
         library.Remove(source.LcscPartNumber);
-        library.Add(BuildComponent(source, library, model).Build());
+        library.Remove(footprintName);
+        library.Add(BuildComponent(source, footprintName, library, model).Build());
     }
 
-    private static ComponentBuilder BuildComponent(EdaComponent source, PcbLibrary library, Downloaded3dModel? model)
+    private static ComponentBuilder BuildComponent(EdaComponent source, string footprintName, PcbLibrary library, Downloaded3dModel? model)
     {
-        var component = PcbComponent.Create(source.LcscPartNumber).WithDescription(source.Name);
+        var component = PcbComponent.Create(footprintName).WithDescription(source.Name);
 
         foreach (var pad in source.Pads)
         {

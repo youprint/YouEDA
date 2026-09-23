@@ -4,6 +4,7 @@ public sealed class EdaComponent
     public required string LcscPartNumber { get; init; }
     public string Name { get; set; } = "Unnamed";
     public string Description { get; set; } = "";
+    public string FootprintName { get; set; } = "";
     public List<EdaPad> Pads { get; } = [];
     public List<EdaShape> Shapes { get; } = [];
     public List<EdaSymbolPin> SymbolPins { get; } = [];

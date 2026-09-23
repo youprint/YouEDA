@@ -37,6 +37,8 @@ public sealed class Parser
         if (!root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object) return;
         component.Name = Text(result, "title");
         component.Description = Text(result, "description");
+        if (result.TryGetProperty("packageDetail", out var package) && package.ValueKind == JsonValueKind.Object)
+            component.FootprintName = Text(package, "title");
         if (string.IsNullOrWhiteSpace(component.Name)) component.Name = component.LcscPartNumber;
         if (result.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.Array)
             foreach (var tag in tags.EnumerateArray())

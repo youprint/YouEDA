@@ -40,7 +40,8 @@ public sealed class AltiumSchExporter
         var verified = (SchLibrary)await AltiumLibrary.OpenSchLibAsync(path);
         if (verified[symbol.Name] is not SchComponent written ||
             (expectedPinCount is not null && written.Pins.Count != expectedPinCount) ||
-            !written.Implementations.Any(model => model.ModelType == "PCBLIB" && model.ModelName == symbol.Name))
+            !written.Implementations.Any(model => model.ModelType == "PCBLIB" &&
+                model.ModelName == FootprintNameForSymbol(symbol)))
             throw new InvalidDataException("The shared SchLib did not pass post-write verification.");
         return path;
     }
@@ -71,6 +72,9 @@ public sealed class AltiumSchExporter
     /// <summary>Keep the bundled artwork while following the user's Value/Comment conventions.</summary>
     public static void PrepareSymbol(SchComponent symbol, EdaComponent source)
     {
+        var footprint = GetOrCreateParameter(symbol, "Footprint", -5.588, 5.08);
+        footprint.Value = AltiumFootprintNaming.NameFor(source);
+        footprint.IsVisible = false;
         var value = source.Properties.GetValueOrDefault("Value");
         var manufacturerPart = source.Properties.GetValueOrDefault("Manufacturer Part");
         var isDiode = symbol.DesignatorPrefix?.StartsWith('D') == true;
@@ -142,11 +146,16 @@ public sealed class AltiumSchExporter
         models.Add(new SchImplementation
         {
             Description = "YouEDA footprint",
-            ModelName = symbol.Name,
+            ModelName = FootprintNameForSymbol(symbol),
             ModelType = "PCBLIB",
             IsCurrent = true
         });
     }
+
+    private static string FootprintNameForSymbol(SchComponent symbol) =>
+        symbol.Parameters.OfType<SchParameter>().FirstOrDefault(parameter =>
+            parameter.Name.Equals("Footprint", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(parameter.Value))?.Value ?? symbol.Name;
 
     private static void EnsureReadableCanvas(SchLibrary library)
     {
@@ -189,7 +198,9 @@ public sealed class AltiumSchExporter
             DesignItemId = source.Properties.GetValueOrDefault("Manufacturer Part"),
             PartCount = 1
         };
-        symbol.AddParameter(new SchParameter { Name = "Designator", Value = Prefix(source) + "?", IsVisible = true, HideName = true });
+        var designator = new SchParameter { Name = "Designator", Value = Prefix(source) + "?", IsVisible = true,
+            HideName = true, Color = 8388608, FontId = 1 };
+        symbol.AddParameter(designator);
         symbol.AddParameter(new SchParameter { Name = "LCSC Part", Value = source.LcscPartNumber, IsVisible = false });
         if (source.Properties.TryGetValue("Value", out var value) && !string.IsNullOrWhiteSpace(value))
             symbol.AddParameter(new SchParameter { Name = "Value", Value = value, IsVisible = true, HideName = true });
@@ -204,17 +215,24 @@ public sealed class AltiumSchExporter
             right = source.SymbolPins.Except(left).ToArray();
         }
         var rows = Math.Max(2, Math.Max(left.Length, right.Length));
-        const double halfWidth = 5.08, spacing = 2.54, pinLength = 2.54;
+        const double halfWidth = 10.16, spacing = 2.54;
         var halfHeight = rows * spacing / 2;
+        designator.Location = new CoordPoint(Coord.FromMm(-halfWidth), Coord.FromMm(halfHeight + spacing));
+        symbol.AddParameter(new SchParameter { Name = "Comment", Value = source.Name, IsVisible = true,
+            HideName = true, Color = 8388608, FontId = 1,
+            Location = new CoordPoint(Coord.FromMm(-halfWidth), Coord.FromMm(-halfHeight - spacing)) });
         symbol.AddRectangle(new SchRectangle
         {
             Corner1 = new CoordPoint(Coord.FromMm(-halfWidth), Coord.FromMm(-halfHeight)),
             Corner2 = new CoordPoint(Coord.FromMm(halfWidth), Coord.FromMm(halfHeight)),
-            Color = 0,
+            Color = 128,
+            LineWidth = Coord.FromMm(0.0508),
             IsFilled = false
         });
-        AddPins(symbol, left, -halfWidth - pinLength, PinOrientation.Right, rows);
-        AddPins(symbol, right, halfWidth + pinLength, PinOrientation.Left, rows);
+        // In Altium, the pin location is the body-side endpoint and the orientation points
+        // outward. Reversing that convention puts pin numbers inside the body and names outside.
+        AddPins(symbol, left, -halfWidth, PinOrientation.Left, rows);
+        AddPins(symbol, right, halfWidth, PinOrientation.Right, rows);
         return symbol;
     }
 

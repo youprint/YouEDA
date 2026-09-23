@@ -14,15 +14,17 @@ if (args.Length > 0 && args[0] == "--inspect-symbol")
         Console.WriteLine($"LIBRARY {path}");
         Console.WriteLine("HEADER " + string.Join(" ", (library.HeaderParameters ?? new()).Where(kv => kv.Key.Contains("color", StringComparison.OrdinalIgnoreCase) || kv.Key.Contains("sheet", StringComparison.OrdinalIgnoreCase) || kv.Key.Contains("font", StringComparison.OrdinalIgnoreCase) || kv.Key.Contains("size", StringComparison.OrdinalIgnoreCase)).Take(35).Select(kv => $"{kv.Key}={kv.Value}")));
         foreach (var item in library.Components.OfType<SchComponent>().Where(item =>
-                     item.Name == "C11702" || item.Name.Contains("Resistor", StringComparison.OrdinalIgnoreCase) ||
+                     item.Name is "C11702" or "C48618269" || item.Name.Contains("Resistor", StringComparison.OrdinalIgnoreCase) ||
                      item.Name.EndsWith(" Diode", StringComparison.OrdinalIgnoreCase) ||
                      path.Contains("Resistors.SchLib", StringComparison.OrdinalIgnoreCase) || path.Contains("Diodes.SchLib", StringComparison.OrdinalIgnoreCase) ||
                      path.Contains("Capacitors.SchLib", StringComparison.OrdinalIgnoreCase) ||
                      path.Contains("Desktop\\Library", StringComparison.OrdinalIgnoreCase)).Take(3))
         {
-            Console.WriteLine($"SYMBOL {item.Name}: pins={item.Pins.Count}, polylines={item.Polylines.Count}, models={item.Implementations.Count}");
+            Console.WriteLine($"SYMBOL {item.Name}: pins={item.Pins.Count}, rectangles={item.Rectangles.Count}, polylines={item.Polylines.Count}, models={item.Implementations.Count}");
             foreach (var pin in item.Pins.Take(3))
-                Console.WriteLine($"  PIN {pin.Designator} {pin.Name}: ({pin.Location.X.ToMm():F4},{pin.Location.Y.ToMm():F4}) length={pin.Length.ToMm():F4}");
+                Console.WriteLine($"  PIN {pin.Designator} {pin.Name}: ({pin.Location.X.ToMm():F4},{pin.Location.Y.ToMm():F4}) length={pin.Length.ToMm():F4} orientation={pin.Orientation}");
+            foreach (var rect in item.Rectangles.Take(2))
+                Console.WriteLine($"  RECT ({rect.Corner1.X.ToMm():F4},{rect.Corner1.Y.ToMm():F4})-({rect.Corner2.X.ToMm():F4},{rect.Corner2.Y.ToMm():F4}) color={rect.Color} width={rect.LineWidth.ToMm():F4}");
             foreach (var line in item.Polylines.Take(2))
                 Console.WriteLine("  LINE " + string.Join(" ", line.Vertices.Take(8).Select(v => $"({v.X.ToMm():F4},{v.Y.ToMm():F4})")));
             Console.WriteLine($"  META comment={item.Comment} prefix={item.DesignatorPrefix} description={item.Description}");
@@ -43,7 +45,7 @@ const string source = """
 "subparts":[{"dataStr":{"head":{"x":0,"y":0,"c_para":{"pre":"U?"}},"shape":[
 "R~-2~-2~~~4~4~#880000~1~0~none~gge3~0",
 "P~show~0~2~20~0~0~gge4~0^^20~0^^M 20 0 h -10~#8D2323^^0~7~3~0~B~end~~~#8D2323"]}}],
-"packageDetail":{"dataStr":{"head":{"x":100,"y":100},"shape":[
+"packageDetail":{"title":"SYNTH_TEST_PAD","dataStr":{"head":{"x":100,"y":100},"shape":[
 "PAD~OVAL~100~100~10~8~11~~1~2~~0~gge5~5~~Y",
 "TRACK~1~3~~90 90 110 90~gge6~0",
 "RECT~95~95~10~10~3~gge7~0~1~none",
@@ -52,6 +54,8 @@ const string source = """
 """;
 
 var component = new Parser().Parse("C999999", source);
+Check(component.FootprintName == "SYNTH_TEST_PAD" &&
+    AltiumFootprintNaming.NameFor(component) == "SYNTH_TEST_PAD", "EasyEDA package title parsing");
 Check(component.Pads.Count == 1 && Math.Abs(component.Pads[0].HoleMm - 1.016) < .0001,
     "EasyEDA drill radius must become millimetre diameter");
 Check(component.SymbolUnits.Count == 2 && component.SymbolPins.Count == 2, "multi-unit symbol parsing");
@@ -81,7 +85,15 @@ Check(File.ReadAllText(Path.Combine(output, "youeda.pretty", "C999999.kicad_mod"
 
 var altiumFile = await new AltiumV2Exporter().UpsertPcbLibAsync(component, output);
 var reopened = (PcbLibrary)await AltiumLibrary.OpenPcbLibAsync(altiumFile);
-var altiumComponent = reopened.Components.Single(item => item.Name == component.LcscPartNumber);
+var altiumComponent = reopened.Components.Single(item => item.Name == component.FootprintName);
+Check(!reopened.Contains(component.LcscPartNumber), "Altium PcbLib uses the EasyEDA footprint name");
+component.FootprintName = "";
+await new AltiumV2Exporter().UpsertPcbLibAsync(component, output);
+component.FootprintName = "SYNTH_TEST_PAD";
+await new AltiumV2Exporter().UpsertPcbLibAsync(component, output);
+reopened = (PcbLibrary)await AltiumLibrary.OpenPcbLibAsync(altiumFile);
+Check(reopened.Components.Count(item => item.Name == component.FootprintName) == 1 &&
+    !reopened.Contains(component.LcscPartNumber), "re-import migrates legacy LCSC footprint name");
 var pad = (PcbPad)altiumComponent.Pads.Single();
 Check(Math.Abs(pad.HoleSize.ToMm() - 1.016) < .001 && pad.HoleType == PadHoleType.Slot &&
     Math.Abs(Coord.FromRaw(pad.HoleSlotLength).ToMm() - 1.27) < .001, "Altium drilled pad round-trip");
@@ -108,7 +120,7 @@ var genericOutput = Path.Combine(AppContext.BaseDirectory, "generic-output");
 await writer.UpsertAsync(component, genericOutput, resolver.LoadSelectedComponent(match!));
 Check(File.ReadAllText(Path.Combine(genericOutput, "youeda.kicad_sym")).Contains("(xy -2.54 0)"),
     "bundled Altium graphic scale translation");
-var resistorSource = new EdaComponent { LcscPartNumber = "C11702", Name = "0402WGF1001TCE", Description = "1KΩ ±1%" };
+var resistorSource = new EdaComponent { LcscPartNumber = "C11702", Name = "0402WGF1001TCE", Description = "1KΩ ±1%", FootprintName = "R0402_EASYEDA" };
 resistorSource.Properties["Value"] = "1kΩ";
 var bundled = (SchLibrary)await AltiumLibrary.OpenSchLibAsync(catalog);
 var resistor = (SchComponent)bundled["0724 Resistor"]!;
@@ -120,7 +132,7 @@ var schPath = await schExporter.UpsertSymbolAsync(resistor, output);
 var writtenSch = (SchLibrary)await AltiumLibrary.OpenSchLibAsync(schPath);
 var writtenResistor = (SchComponent)writtenSch["C11702"]!;
 Check(writtenResistor.Implementations.Count == 1 && writtenResistor.Implementations[0].ModelType == "PCBLIB" &&
-    writtenResistor.Implementations[0].ModelName == "C11702", "native Altium footprint model link");
+    writtenResistor.Implementations[0].ModelName == resistorSource.FootprintName, "native Altium footprint model link");
 Check(writtenResistor.Parameters.OfType<SchParameter>().Any(p => p.Name == "Value" && p.Value == "1kΩ" && !p.IsVisible) &&
     writtenResistor.Parameters.OfType<SchParameter>().Any(p => p.Name == "Comment" && p.Value == "=Value" && p.IsVisible),
     "passive value and visible Altium comment expression");
@@ -129,7 +141,37 @@ Check(writtenSch.HeaderParameters?.Any(kv => kv.Key == "AreaColor" && kv.Value =
 await schExporter.UpsertSymbolAsync(writtenResistor, output);
 writtenSch = (SchLibrary)await AltiumLibrary.OpenSchLibAsync(schPath);
 Check(((SchComponent)writtenSch["C11702"]!).Implementations.Count == 1, "idempotent native footprint link");
-var diodeSource = new EdaComponent { LcscPartNumber = "C2891778", Name = "BZT52C10", Description = "10 V Zener" };
+var icSource = new EdaComponent { LcscPartNumber = "C48618269", Name = "TPA132A2Q-SO1R-S", FootprintName = "SOP-8_TEST" };
+var leftNames = new[] { "IN-", "GND", "VREF2", "NC" };
+var rightNames = new[] { "OUT", "VS", "VREF1", "IN+" };
+for (var index = 0; index < 4; index++)
+{
+    icSource.SymbolPins.Add(new EdaSymbolPin((index + 1).ToString(), leftNames[index], 0, 180, "start"));
+    icSource.SymbolPins.Add(new EdaSymbolPin((index + 5).ToString(), rightNames[index], 0, 0, "end"));
+}
+await schExporter.UpsertEasyEdaSymbolAsync(icSource, output);
+writtenSch = (SchLibrary)await AltiumLibrary.OpenSchLibAsync(schPath);
+var writtenIc = (SchComponent)writtenSch[icSource.LcscPartNumber]!;
+File.WriteAllBytes(Path.Combine(output, "ic-fallback-preview.png"),
+    SchematicSymbolPreviewRenderer.RenderPng(writtenIc));
+var icBody = writtenIc.Rectangles.OfType<SchRectangle>().Single();
+Check(icBody.Color == 128 && Math.Abs(icBody.LineWidth.ToMm() - 0.0508) < 0.001 &&
+    Math.Abs(icBody.Corner1.X.ToMm() + 10.16) < 0.001 &&
+    Math.Abs(icBody.Corner2.X.ToMm() - 10.16) < 0.001,
+    "EasyEDA fallback IC has a visible body outline");
+Check(writtenIc.Pins.OfType<SchPin>().Where(pin => int.Parse(pin.Designator!) <= 4)
+        .All(pin => pin.Orientation == OriginalCircuit.Eda.Enums.PinOrientation.Left &&
+                    Math.Abs(pin.Location.X.ToMm() + 10.16) < 0.001) &&
+    writtenIc.Pins.OfType<SchPin>().Where(pin => int.Parse(pin.Designator!) >= 5)
+        .All(pin => pin.Orientation == OriginalCircuit.Eda.Enums.PinOrientation.Right &&
+                    Math.Abs(pin.Location.X.ToMm() - 10.16) < 0.001),
+    "EasyEDA fallback pins point outward from the body");
+Check(writtenIc.Parameters.OfType<SchParameter>().Any(parameter =>
+        parameter.Name == "Designator" && parameter.Location.Y.ToMm() > icBody.Corner2.Y.ToMm()) &&
+    writtenIc.Parameters.OfType<SchParameter>().Any(parameter =>
+        parameter.Name == "Comment" && parameter.Location.Y.ToMm() < icBody.Corner1.Y.ToMm()),
+    "EasyEDA fallback labels sit outside the body");
+var diodeSource = new EdaComponent { LcscPartNumber = "C2891778", Name = "BZT52C10", Description = "10 V Zener", FootprintName = "SOD-123_EASYEDA" };
 diodeSource.Properties["Manufacturer Part"] = "BZT52C10";
 var diode = (SchComponent)bundled.Components.OfType<SchComponent>().First(item => item.Name.EndsWith(" Diode", StringComparison.OrdinalIgnoreCase));
 File.WriteAllBytes(Path.Combine(output, "diode-symbol-preview.png"), SchematicSymbolPreviewRenderer.RenderPng(diode));
@@ -147,9 +189,9 @@ Check(writtenDiode.Pins.Select(pin => pin.Designator).SequenceEqual(diodePinNumb
 Check(writtenDiode.Parameters.OfType<SchParameter>().Any(p => p.Name == "Manufacturer Part" && p.Value == "BZT52C10" && !p.IsVisible) &&
     writtenDiode.Parameters.OfType<SchParameter>().Any(p => p.Name == "Comment" && p.Value == "=Manufacturer Part" && p.IsVisible),
     "diode manufacturer-part comment expression");
-Check(writtenDiode.Implementations.Any(model => model.ModelType == "PCBLIB" && model.ModelName == diodeSource.LcscPartNumber),
+Check(writtenDiode.Implementations.Any(model => model.ModelType == "PCBLIB" && model.ModelName == diodeSource.FootprintName),
     "diode native footprint model link");
-var capacitorSource = new EdaComponent { LcscPartNumber = "C999998", Name = "CC0402", Description = "10 uF capacitor" };
+var capacitorSource = new EdaComponent { LcscPartNumber = "C999998", Name = "CC0402", Description = "10 uF capacitor", FootprintName = "C0402_EASYEDA" };
 capacitorSource.Properties["Value"] = "10uF";
 var capacitor = (SchComponent)bundled.Components.OfType<SchComponent>().First(item => item.Name.EndsWith(" Capacitor", StringComparison.OrdinalIgnoreCase));
 File.WriteAllBytes(Path.Combine(output, "capacitor-symbol-preview.png"), SchematicSymbolPreviewRenderer.RenderPng(capacitor));
@@ -162,7 +204,7 @@ var writtenCapacitor = (SchComponent)writtenSch[capacitorSource.LcscPartNumber]!
 Check(writtenCapacitor.Parameters.OfType<SchParameter>().Any(p => p.Name == "Value" && p.Value == "10uF" && !p.IsVisible) &&
     writtenCapacitor.Parameters.OfType<SchParameter>().Any(p => p.Name == "Comment" && p.Value == "=Value" && p.IsVisible),
     "capacitor value/comment convention");
-Check(writtenCapacitor.Implementations.Any(model => model.ModelType == "PCBLIB" && model.ModelName == capacitorSource.LcscPartNumber),
+Check(writtenCapacitor.Implementations.Any(model => model.ModelType == "PCBLIB" && model.ModelName == capacitorSource.FootprintName),
     "capacitor native footprint model link");
 Console.WriteLine($"PASS: parser, KiCad/Altium footprints, resistor/diode/capacitor labels and model links; {output}");
 
