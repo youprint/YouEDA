@@ -7,6 +7,7 @@ public sealed class EdaComponent
     public List<EdaPad> Pads { get; } = [];
     public List<EdaShape> Shapes { get; } = [];
     public List<EdaSymbolPin> SymbolPins { get; } = [];
+    public List<EdaSymbolUnit> SymbolUnits { get; } = [];
     public List<string> Tags { get; } = [];
     public Dictionary<string,string> Properties { get; } = [];
 
@@ -26,6 +27,22 @@ public sealed record Eda3dModel(
     double RotationZDeg,
     double WidthMm,
     double HeightMm);
-public sealed record EdaSymbolPin(string Number, string Name, int ElectricalType, int RotationDeg, string NameAnchor);
-public sealed record EdaPad(string Number, double Xmm, double Ymm, double WidthMm, double HeightMm, double RotationDeg, string Layer, bool Plated, double HoleMm);
+public sealed record EdaSymbolPin(string Number, string Name, int ElectricalType, int RotationDeg, string NameAnchor)
+{
+    public double Xmm { get; init; }
+    public double Ymm { get; init; }
+    public double LengthMm { get; init; }
+}
+public sealed class EdaSymbolUnit
+{
+    public List<EdaSymbolPin> Pins { get; } = [];
+    public List<EdaSymbolGraphic> Graphics { get; } = [];
+}
+public sealed record EdaSymbolGraphic(string Kind, IReadOnlyList<(double X, double Y)> PointsMm, double StrokeMm, bool Filled);
+public sealed record EdaPad(string Number, double Xmm, double Ymm, double WidthMm, double HeightMm, double RotationDeg, string Layer, bool Plated, double HoleMm)
+{
+    public string Shape { get; init; } = "RECT";
+    public double SlotLengthMm { get; init; }
+    public IReadOnlyList<(double X, double Y)> PolygonPointsMm { get; init; } = [];
+}
 public sealed record EdaShape(string Kind, string Layer, IReadOnlyList<(double X, double Y)> PointsMm, double StrokeMm);
