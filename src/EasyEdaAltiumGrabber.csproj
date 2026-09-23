@@ -19,6 +19,7 @@
     <!-- The CLI is a separate nested project; its generated obj sources must not enter WPF compilation. -->
     <Compile Remove="YouEDA.Cli\**\*.cs" />
     <ProjectReference Include="$(AltiumSharpSource)" Condition="Exists('$(AltiumSharpSource)')" />
+    <ProjectReference Include="$(AltiumSharpRoot)\src\OriginalCircuit.Altium.Rendering.Raster\OriginalCircuit.Altium.Rendering.Raster.csproj" />
     <ProjectReference Include="$(AltiumSharpRoot)\shared\OriginalCircuit.Eda.Abstractions\src\OriginalCircuit.Eda.Abstractions\OriginalCircuit.Eda.Abstractions.csproj" />
     <!-- Altium-authored PcbLib used as a metadata/section template for generated libraries. -->
     <Content Include="$(AltiumSharpRoot)\TestData\PCB - DIODES - DIODES INC SDT10A45P5.PCBLIB" Link="Templates\AltiumTemplate.PcbLib">

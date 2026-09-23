@@ -200,8 +200,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private SymbolLibraryMatch? PromptForBundledSymbol(EdaComponent component)
     {
         StatusText = $"{component.LcscPartNumber}: choose a bundled symbol or use the EasyEDA fallback.";
-        var symbols = new UserSymbolLibraryResolver().ListMasterSymbols(UserSymbolDirectory);
-        return BundledSymbolPicker.Pick(component.LcscPartNumber, symbols);
+        var resolver = new UserSymbolLibraryResolver();
+        var symbols = resolver.ListMasterSymbols(UserSymbolDirectory);
+        return BundledSymbolPicker.Pick(component, symbols, resolver);
     }
 
     private IEnumerable<string> RequestedPartNumbers()

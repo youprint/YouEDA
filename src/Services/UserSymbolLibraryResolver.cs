@@ -82,6 +82,16 @@ public sealed class UserSymbolLibraryResolver
         return selected;
     }
 
+    /// <summary>Returns a read-only catalog component for preview without reopening the master library.</summary>
+    public SchComponent LoadPreviewComponent(SymbolLibraryMatch match)
+    {
+        if (match.ComponentName is null)
+            throw new InvalidDataException("Select a component in the bundled library to preview it.");
+        var library = LoadLibrary(match.Path);
+        return library[match.ComponentName] as SchComponent ??
+            throw new InvalidDataException($"Bundled symbol '{match.ComponentName}' was not found.");
+    }
+
     public IReadOnlyList<SymbolLibraryMatch> ListMasterSymbols(string masterPath)
     {
         if (!File.Exists(masterPath)) return [];

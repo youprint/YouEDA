@@ -1,3 +1,4 @@
+using EasyEdaAltiumGrabber.Controls;
 using EasyEdaAltiumGrabber.Services;
 using EasyEdaAltiumGrabber.Models;
 using OriginalCircuit.Altium;
@@ -91,6 +92,18 @@ var catalog = Path.Combine(AppContext.BaseDirectory, "Symbols", "BundledUserSymb
 var resolver = new UserSymbolLibraryResolver();
 var match = resolver.Resolve(component, catalog, null);
 Check(match is not null, "automatic two-terminal crystal match");
+var previewMatch = resolver.ListMasterSymbols(catalog).First(item => item.ComponentName == "0724 Resistor");
+var bundledPreview = resolver.LoadPreviewComponent(previewMatch);
+var fallbackPreview = AltiumSchExporter.CreateEasyEdaSymbol(component);
+var bundledPng = SchematicSymbolPreviewRenderer.RenderPng(bundledPreview);
+var fallbackPng = SchematicSymbolPreviewRenderer.RenderPng(fallbackPreview);
+Check(bundledPreview.Pins.Count == 2 && IsPng(bundledPng),
+    "selected bundled symbol preview renders as PNG");
+Check(fallbackPreview.Pins.Count == component.SymbolPins.Count &&
+    IsPng(fallbackPng),
+    "EasyEDA fallback symbol preview renders as PNG");
+File.WriteAllBytes(Path.Combine(output, "bundled-symbol-preview.png"), bundledPng);
+File.WriteAllBytes(Path.Combine(output, "easyeda-fallback-preview.png"), fallbackPng);
 var genericOutput = Path.Combine(AppContext.BaseDirectory, "generic-output");
 await writer.UpsertAsync(component, genericOutput, resolver.LoadSelectedComponent(match!));
 Check(File.ReadAllText(Path.Combine(genericOutput, "youeda.kicad_sym")).Contains("(xy -2.54 0)"),
@@ -119,6 +132,7 @@ Check(((SchComponent)writtenSch["C11702"]!).Implementations.Count == 1, "idempot
 var diodeSource = new EdaComponent { LcscPartNumber = "C2891778", Name = "BZT52C10", Description = "10 V Zener" };
 diodeSource.Properties["Manufacturer Part"] = "BZT52C10";
 var diode = (SchComponent)bundled.Components.OfType<SchComponent>().First(item => item.Name.EndsWith(" Diode", StringComparison.OrdinalIgnoreCase));
+File.WriteAllBytes(Path.Combine(output, "diode-symbol-preview.png"), SchematicSymbolPreviewRenderer.RenderPng(diode));
 Check(diode.Pins.Any(pin => pin.Designator == "2" && pin.Name == "K" && pin.Location.X.ToMm() > 0) &&
     diode.Pins.Any(pin => pin.Designator == "1" && pin.Name == "A" && pin.Location.X.ToMm() < 0),
     "bundled rectifier pin 2 is the right-side cathode");
@@ -138,6 +152,7 @@ Check(writtenDiode.Implementations.Any(model => model.ModelType == "PCBLIB" && m
 var capacitorSource = new EdaComponent { LcscPartNumber = "C999998", Name = "CC0402", Description = "10 uF capacitor" };
 capacitorSource.Properties["Value"] = "10uF";
 var capacitor = (SchComponent)bundled.Components.OfType<SchComponent>().First(item => item.Name.EndsWith(" Capacitor", StringComparison.OrdinalIgnoreCase));
+File.WriteAllBytes(Path.Combine(output, "capacitor-symbol-preview.png"), SchematicSymbolPreviewRenderer.RenderPng(capacitor));
 capacitor.Name = capacitorSource.LcscPartNumber;
 capacitor.LibReference = capacitorSource.LcscPartNumber;
 AltiumSchExporter.PrepareSymbol(capacitor, capacitorSource);
@@ -155,3 +170,6 @@ static void Check(bool condition, string name)
 {
     if (!condition) throw new InvalidOperationException("FAILED: " + name);
 }
+
+static bool IsPng(byte[] bytes) => bytes.Length > 1000 &&
+    bytes[0] == 137 && bytes[1] == 80 && bytes[2] == 78 && bytes[3] == 71;

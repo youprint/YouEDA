@@ -4,7 +4,7 @@ YouEDA is a Windows desktop component loader for EasyEDA/LCSC parts. Enter one L
 
 ## Download version 1.0.0
 
-Download `YouEDA-1.0.0-win-x64.zip` from the [v1.0.0 release](https://github.com/youprint/YouEDA/releases/tag/v1.0.0). Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if it is not already installed, extract the entire archive to a permanent folder on Windows 10/11, then run `YouEDA.exe`. Keep the DLLs, templates, and bundled symbol catalog alongside the executable. The published v1.0.0 package is framework-dependent; the separate .NET 10 SDK is only needed to build from source.
+The [v1.0.0 release](https://github.com/youprint/YouEDA/releases/tag/v1.0.0) currently has source archives but no attached executable. For now, build and publish from source using the commands below. Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) on the target Windows 10/11 computer, then copy the entire published folder and run `YouEDA.exe`. Keep the DLLs, templates, and bundled symbol catalog alongside the executable. The .NET 10 SDK is needed only to build from source.
 
 Version 1.0.0 adds native KiCad symbol/footprint export, improves drilled and slotted Altium pads, and fixes the dark-theme result-row contrast and bottom export controls. The KiCad exporter does not yet translate every EasyEDA primitive; review the [current limitations](#kicad-exporter-smoke-test) and validate each generated part against its datasheet.
 
@@ -41,7 +41,7 @@ KiCad output uses `youeda.kicad_sym`, `youeda.pretty/<LCSC>.kicad_mod`, and, whe
 - Native KiCad symbol, footprint, and STEP-model output with shared-library upserts, project library tables, and multi-unit EasyEDA symbol support.
 - Clear selected-row text and a separate export-format selector for Altium, KiCad, or both.
 - Correct EasyEDA drill-radius-to-diameter conversion for both exporters; Altium slot metadata is preserved in its native size/shape block.
-- Common parts use the bundled symbol catalog (passives, diodes, crystals, connectors, sensors, transistors, LEDs, TVS/Zener, and diode arrays). IC/MCU-style parts are generated from EasyEDA pin information. Ambiguous non-IC matches present a picker.
+- Common parts use the bundled symbol catalog (passives, diodes, crystals, connectors, sensors, transistors, LEDs, TVS/Zener, and diode arrays). IC/MCU-style parts are generated from EasyEDA pin information. Ambiguous non-IC matches open a searchable picker with side-by-side previews of the EasyEDA-pin fallback and the currently selected bundled symbol.
 - **Open in Altium** launches both `youeda.PcbLib` and `youeda.SchLib` through the Windows Altium file association.
 
 ## Build from source
@@ -110,7 +110,7 @@ Compress-Archive -Path .\dist\YouEDA\* -DestinationPath .\dist\YouEDA-1.0.0-win-
 
 ## KiCad exporter smoke test
 
-The repository includes an offline test for EasyEDA parsing, multi-unit symbols, KiCad upsert, 3D paths, Altium drilled-pad round-tripping, and native schematic labels/footprint links for resistor, capacitor, and diode examples:
+The repository includes an offline test for EasyEDA parsing, multi-unit symbols, KiCad upsert, 3D paths, Altium drilled-pad round-tripping, native schematic labels/footprint links, and rendered symbol previews for resistor, capacitor, and diode examples:
 
 ```powershell
 dotnet run --project .\tests\KiCadSmoke\KiCadSmoke.csproj
