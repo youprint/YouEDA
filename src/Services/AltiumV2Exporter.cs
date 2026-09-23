@@ -17,35 +17,11 @@ public sealed class AltiumV2Exporter
     {
         Directory.CreateDirectory(outputDirectory);
         var path = Path.Combine(outputDirectory, "youeda.PcbLib");
-
-        // A newly created V2 PcbLibrary can be internally round-tripped but some Altium releases
-        // reject its default Library section. Seed from an Altium-authored library so its required
-        // section metadata, layer mapping, and version information are preserved.
-        PcbLibrary library;
-        if (File.Exists(path))
-        {
-            library = (PcbLibrary)await AltiumLibrary.OpenPcbLibAsync(path);
-        }
-        else
-        {
-            var templatePath = Path.Combine(AppContext.BaseDirectory, "Templates", "AltiumTemplate.PcbLib");
-            if (!File.Exists(templatePath))
-                throw new FileNotFoundException("The bundled Altium PcbLib template is missing.", templatePath);
-            library = (PcbLibrary)await AltiumLibrary.OpenPcbLibAsync(templatePath);
-            foreach (var existing in library.Components.Select(item => item.Name).ToArray())
-                library.Remove(existing);
-            library.ComponentParamsToc.Clear();
-            // The Altium-authored template contains a diode STEP asset.  It is not linked to
-            // our generated footprint and must not be carried into every new component library.
-            library.Models.Clear();
-        }
+        var library = await OpenSharedPcbLibAsync(outputDirectory);
 
         // Re-running a part refreshes it without duplicating its footprint. Other components,
         // their parameters, and their embedded STEP data remain untouched.
-        library.Remove(source.LcscPartNumber);
-        var component = BuildComponent(source, library, model);
-
-        library.Add(component.Build());
+        Upsert(library, source, model);
         await library.SaveAsync(path);
 
         // Catch writer regressions before reporting a file as generated. This validates its compound
@@ -57,27 +33,61 @@ public sealed class AltiumV2Exporter
         return path;
     }
 
+    /// <summary>Loads the shared library once for high-throughput, single-writer batch exports.</summary>
+    public async Task<PcbLibrary> OpenSharedPcbLibAsync(string outputDirectory)
+    {
+        Directory.CreateDirectory(outputDirectory);
+        var path = Path.Combine(outputDirectory, "youeda.PcbLib");
+        if (File.Exists(path)) return (PcbLibrary)await AltiumLibrary.OpenPcbLibAsync(path);
+
+        // A newly created V2 PcbLibrary can be internally round-tripped but some Altium releases
+        // reject its default Library section. Seed from an Altium-authored library so its required
+        // section metadata, layer mapping, and version information are preserved.
+        var templatePath = Path.Combine(AppContext.BaseDirectory, "Templates", "AltiumTemplate.PcbLib");
+        if (!File.Exists(templatePath))
+            throw new FileNotFoundException("The bundled Altium PcbLib template is missing.", templatePath);
+        var library = (PcbLibrary)await AltiumLibrary.OpenPcbLibAsync(templatePath);
+        foreach (var existing in library.Components.Select(item => item.Name).ToArray()) library.Remove(existing);
+        library.ComponentParamsToc.Clear();
+        library.Models.Clear();
+        return library;
+    }
+
+    /// <summary>Mutates an already-open shared PcbLib. Caller controls checkpoint saves.</summary>
+    public void Upsert(PcbLibrary library, EdaComponent source, Downloaded3dModel? model = null)
+    {
+        library.Remove(source.LcscPartNumber);
+        library.Add(BuildComponent(source, library, model).Build());
+    }
+
     private static ComponentBuilder BuildComponent(EdaComponent source, PcbLibrary library, Downloaded3dModel? model)
     {
         var component = PcbComponent.Create(source.LcscPartNumber).WithDescription(source.Name);
 
         foreach (var pad in source.Pads)
         {
-            component.AddPad(builder =>
-            {
-                builder.At(Coord.FromMm(pad.Xmm), Coord.FromMm(pad.Ymm))
+            var builder = PcbPad.Create(pad.Number);
+            builder.At(Coord.FromMm(pad.Xmm), Coord.FromMm(pad.Ymm))
                     .Size(Coord.FromMm(pad.WidthMm), Coord.FromMm(pad.HeightMm))
-                    .Shape(PadShape.Rectangular)
+                    .Shape(pad.Shape is "OVAL" or "ELLIPSE" ? PadShape.Round : PadShape.Rectangular)
                     .Rotation(pad.RotationDeg)
                     .WithDesignator(pad.Number);
 
                 // A zero-hole pad must be emitted as an SMD pad; merely setting HoleSize(0)
                 // leaves a partially configured pad record which Altium can reject on load.
-                if (pad.Plated && pad.HoleMm > 0)
-                    builder.ThroughHole(Coord.FromMm(pad.HoleMm)).Layer(74); // Multi-layer
+                if (pad.HoleMm > 0)
+                    builder.ThroughHole(Coord.FromMm(pad.HoleMm)).Plated(pad.Plated).Layer(74); // Multi-layer
                 else
                     builder.Smd(MapCopperLayer(pad.Layer));
-            });
+            var altiumPad = builder.Build();
+            if (pad.SlotLengthMm > 0 && pad.HoleMm > 0)
+            {
+                // Altium stores slot shape/length only in the optional size/shape block.
+                altiumPad.HasSizeShapeBlock = true;
+                altiumPad.HoleType = PadHoleType.Slot;
+                altiumPad.HoleSlotLength = Coord.FromMm(pad.SlotLengthMm).ToRaw();
+            }
+            component.AddPad(altiumPad);
         }
 
         foreach (var track in source.Shapes.Where(shape => shape.Kind == "TRACK" && shape.PointsMm.Count > 1))
@@ -91,6 +101,39 @@ public sealed class AltiumV2Exporter
                     .To(Coord.FromMm(end.X), Coord.FromMm(end.Y))
                     .Width(Coord.FromMm(track.StrokeMm))
                     .Layer(MapEasyEdaLayer(track.Layer)));
+            }
+        }
+
+        // EasyEDA rectangles and circles are genuine footprint artwork, not pad copper.
+        foreach (var rect in source.Shapes.Where(shape => shape.Kind == "RECT" && shape.PointsMm.Count > 1 &&
+            shape.Layer is "3" or "4" or "99"))
+        {
+            var a = rect.PointsMm[0]; var z = rect.PointsMm[1];
+            var corners = new[] { a, (z.X, a.Y), z, (a.X, z.Y), a };
+            for (var i = 1; i < corners.Length; i++)
+                component.AddTrack(trackBuilder => trackBuilder
+                    .From(Coord.FromMm(corners[i - 1].X), Coord.FromMm(corners[i - 1].Y))
+                    .To(Coord.FromMm(corners[i].X), Coord.FromMm(corners[i].Y))
+                    .Width(Coord.FromMm(Math.Max(.01, rect.StrokeMm)))
+                    .Layer(MapEasyEdaLayer(rect.Layer)));
+        }
+        foreach (var circle in source.Shapes.Where(shape => shape.Kind == "CIRCLE" && shape.PointsMm.Count > 1 &&
+            shape.Layer is "3" or "4" or "99"))
+        {
+            var center = circle.PointsMm[0];
+            component.AddArc(arc => arc.Center(Coord.FromMm(center.X), Coord.FromMm(center.Y))
+                .Radius(Coord.FromMm(circle.PointsMm[1].X)).FullCircle()
+                .Width(Coord.FromMm(Math.Max(.01, circle.StrokeMm)))
+                .Layer(MapEasyEdaLayer(circle.Layer)));
+        }
+        foreach (var outline in source.Shapes.Where(shape => shape.Kind == "SOLIDREGION" && shape.Layer == "99" && shape.PointsMm.Count > 2))
+        {
+            for (var i = 1; i < outline.PointsMm.Count; i++)
+            {
+                var a = outline.PointsMm[i - 1]; var z = outline.PointsMm[i];
+                component.AddTrack(trackBuilder => trackBuilder
+                    .From(Coord.FromMm(a.X), Coord.FromMm(a.Y)).To(Coord.FromMm(z.X), Coord.FromMm(z.Y))
+                    .Width(Coord.FromMm(.05)).Layer(57)); // Mechanical 1 / courtyard
             }
         }
 
@@ -150,6 +193,7 @@ public sealed class AltiumV2Exporter
         // accidentally placed silkscreen on Mid-Layer 20, which appears purple.
         "3" or "TopSilkLayer" => 33,
         "4" or "BottomSilkLayer" => 34,
+        "99" => 57, // Mechanical 1
         _ => 33
     };
 }

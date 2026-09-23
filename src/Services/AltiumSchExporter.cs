@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using EasyEdaAltiumGrabber.Models;
 using OriginalCircuit.Altium;
@@ -17,7 +18,9 @@ public sealed class AltiumSchExporter
     {
         if (source.SymbolPins.Count == 0)
             throw new InvalidDataException("EasyEDA returned no schematic P pin records.");
-        return UpsertSymbolAsync(CreateEasyEdaSymbol(source), outputDirectory, source.SymbolPins.Count);
+        var symbol = CreateEasyEdaSymbol(source);
+        PrepareSymbol(symbol, source);
+        return UpsertSymbolAsync(symbol, outputDirectory, source.SymbolPins.Count);
     }
 
     /// <summary>Adds or refreshes a symbol while retaining all other symbols in youeda.SchLib.</summary>
@@ -26,23 +29,152 @@ public sealed class AltiumSchExporter
         if (string.IsNullOrWhiteSpace(symbol.Name))
             throw new InvalidDataException("The selected schematic symbol has no component name.");
 
+        var path = Path.Combine(outputDirectory, "youeda.SchLib");
+        var library = await OpenSharedSchLibAsync(outputDirectory);
+
+        // Component names are the stable LCSC keys in the output library. Re-importing a
+        // component therefore replaces only that symbol and leaves every other one intact.
+        Upsert(library, symbol);
+        await library.SaveAsync(path);
+
+        var verified = (SchLibrary)await AltiumLibrary.OpenSchLibAsync(path);
+        if (verified[symbol.Name] is not SchComponent written ||
+            (expectedPinCount is not null && written.Pins.Count != expectedPinCount) ||
+            !written.Implementations.Any(model => model.ModelType == "PCBLIB" && model.ModelName == symbol.Name))
+            throw new InvalidDataException("The shared SchLib did not pass post-write verification.");
+        return path;
+    }
+
+    /// <summary>Opens the shared library once for a single-writer bulk import.</summary>
+    public async Task<SchLibrary> OpenSharedSchLibAsync(string outputDirectory)
+    {
         Directory.CreateDirectory(outputDirectory);
         var path = Path.Combine(outputDirectory, "youeda.SchLib");
         var library = File.Exists(path)
             ? (SchLibrary)await AltiumLibrary.OpenSchLibAsync(path)
             : (SchLibrary)AltiumLibrary.CreateSchLib();
+        EnsureReadableCanvas(library);
+        return library;
+    }
 
-        // Component names are the stable LCSC keys in the output library. Re-importing a
-        // component therefore replaces only that symbol and leaves every other one intact.
+    /// <summary>Mutates an already-open library; the caller decides when to checkpoint it.</summary>
+    public void Upsert(SchLibrary library, SchComponent symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol.Name))
+            throw new InvalidDataException("The selected schematic symbol has no component name.");
+        EnsureReadableCanvas(library);
+        AttachFootprint(symbol);
         library.Remove(symbol.Name);
         library.Add(symbol);
-        await library.SaveAsync(path);
+    }
 
-        var verified = (SchLibrary)await AltiumLibrary.OpenSchLibAsync(path);
-        if (verified[symbol.Name] is not SchComponent written ||
-            (expectedPinCount is not null && written.Pins.Count != expectedPinCount))
-            throw new InvalidDataException("The shared SchLib did not pass post-write verification.");
-        return path;
+    /// <summary>Keep the bundled artwork while following the user's Value/Comment conventions.</summary>
+    public static void PrepareSymbol(SchComponent symbol, EdaComponent source)
+    {
+        var value = source.Properties.GetValueOrDefault("Value");
+        var manufacturerPart = source.Properties.GetValueOrDefault("Manufacturer Part");
+        var isDiode = symbol.DesignatorPrefix?.StartsWith('D') == true;
+        var isValuePassive = symbol.DesignatorPrefix is { } prefix &&
+            (prefix.StartsWith('R') || prefix.StartsWith('C') || prefix.StartsWith('L'));
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            var valueParameter = GetOrCreateParameter(symbol, "Value", -5.588, 5.08);
+            valueParameter.Value = value;
+            valueParameter.IsVisible = false;
+        }
+
+        if (isDiode && !string.IsNullOrWhiteSpace(manufacturerPart))
+        {
+            var partParameter = GetOrCreateParameter(symbol, "Manufacturer Part", -5.588, 5.08);
+            partParameter.Value = manufacturerPart;
+            partParameter.IsVisible = false;
+            SetComment(symbol, "=Manufacturer Part");
+        }
+        else if (!string.IsNullOrWhiteSpace(value))
+        {
+            SetComment(symbol, "=Value");
+        }
+        else
+        {
+            SetComment(symbol, source.Name);
+        }
+
+        if (isValuePassive && !string.IsNullOrWhiteSpace(value))
+        {
+            var designator = symbol.Parameters.OfType<SchParameter>().FirstOrDefault(p => p.Name == "Designator");
+            if (designator is not null)
+                designator.Location = new CoordPoint(designator.Location.X, Coord.FromMm(2.54));
+            var comment = symbol.Parameters.OfType<SchParameter>().First(p => p.Name == "Comment");
+            comment.Location = new CoordPoint(Coord.FromMm(0), Coord.FromMm(-2.54));
+        }
+    }
+
+    private static SchParameter GetOrCreateParameter(SchComponent symbol, string name, double x, double y)
+    {
+        var parameter = symbol.Parameters.OfType<SchParameter>().FirstOrDefault(p =>
+            p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (parameter is not null) return parameter;
+        parameter = new SchParameter
+        {
+            Name = name, FontId = 1, Color = 8388608, HideName = true,
+            Location = new CoordPoint(Coord.FromMm(x), Coord.FromMm(y))
+        };
+        symbol.AddParameter(parameter);
+        return parameter;
+    }
+
+    private static void SetComment(SchComponent symbol, string expression)
+    {
+        symbol.Comment = expression;
+        var comment = GetOrCreateParameter(symbol, "Comment", 0, -2.54);
+        comment.Value = expression;
+        comment.IsVisible = true;
+        comment.HideName = true;
+    }
+
+    private static void AttachFootprint(SchComponent symbol)
+    {
+        // AltiumSharp exposes implementations read-only; its concrete list is still mutable.
+        // Check the representation explicitly so a future AltiumSharp change fails visibly.
+        if ((object)symbol.Implementations is not List<SchImplementation> models)
+            throw new InvalidDataException("AltiumSharp changed the schematic implementation collection.");
+        models.RemoveAll(model => model.ModelType?.Equals("PCBLIB", StringComparison.OrdinalIgnoreCase) == true);
+        models.Add(new SchImplementation
+        {
+            Description = "YouEDA footprint",
+            ModelName = symbol.Name,
+            ModelType = "PCBLIB",
+            IsCurrent = true
+        });
+    }
+
+    private static void EnsureReadableCanvas(SchLibrary library)
+    {
+        // Altium displays an otherwise valid, newly created SchLib on a black canvas when
+        // AreaColor is absent; the user's existing Altium library uses this light sheet color.
+        library.HeaderParameters ??= new List<KeyValuePair<string, string>>
+        {
+            new("HEADER", "Protel for Windows - Schematic Library Editor Binary File Version 5.0"),
+            new("Weight", "0"), new("MinorVersion", "3"),
+            new("UniqueID", new string(Enumerable.Range(0, 8).Select(_ => (char)('A' + Random.Shared.Next(26))).ToArray())),
+            new("FontIdCount", "1"), new("FontName1", "Times New Roman"), new("Size1", "10"),
+            new("UseMBCS", "T"), new("IsBOC", "T"), new("SheetStyle", "9"),
+            new("BorderOn", "T"), new("Display_Unit", "0")
+        };
+        AddHeaderIfMissing(library, "AreaColor", "16317695");
+        AddHeaderIfMissing(library, "SnapGridOn", "T");
+        AddHeaderIfMissing(library, "SnapGridSize", "10");
+        AddHeaderIfMissing(library, "VisibleGridOn", "T");
+        AddHeaderIfMissing(library, "VisibleGridSize", "10");
+        AddHeaderIfMissing(library, "CustomX", "18000");
+        AddHeaderIfMissing(library, "CustomY", "18000");
+        AddHeaderIfMissing(library, "UseCustomSheet", "T");
+    }
+
+    private static void AddHeaderIfMissing(SchLibrary library, string name, string value)
+    {
+        if (!library.HeaderParameters!.Any(item => item.Key.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            library.HeaderParameters!.Add(new KeyValuePair<string, string>(name, value));
     }
 
     public static SchComponent CreateEasyEdaSymbol(EdaComponent source)

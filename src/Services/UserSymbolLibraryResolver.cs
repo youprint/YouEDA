@@ -11,6 +11,7 @@ namespace EasyEdaAltiumGrabber.Services;
 /// <summary>Locates the user's existing native Altium symbols without altering their artwork or pin mapping.</summary>
 public sealed class UserSymbolLibraryResolver
 {
+    private readonly Dictionary<string, SchLibrary> _libraryCache = new(StringComparer.OrdinalIgnoreCase);
     public SymbolLibraryMatch? Resolve(EdaComponent component, string? symbolRoot, string? overrideFile)
     {
         if (!string.IsNullOrWhiteSpace(overrideFile))
@@ -53,6 +54,8 @@ public sealed class UserSymbolLibraryResolver
             return destination;
         }
 
+        // Components are mutable (the caller changes Name/LibReference to the LCSC key),
+        // so return a fresh deserialised instance rather than leaking the cached catalog item.
         var source = (SchLibrary)AltiumLibrary.OpenSchLibAsync(match.Path).GetAwaiter().GetResult();
         if (source[match.ComponentName] is not SchComponent selected)
             throw new InvalidDataException($"Bundled symbol '{match.ComponentName}' was not found.");
@@ -71,6 +74,8 @@ public sealed class UserSymbolLibraryResolver
         if (match.ComponentName is null)
             throw new InvalidDataException("A library-wide selection cannot be added to the shared SchLib. Select a component symbol instead.");
 
+        // The selected component will be renamed to the LCSC key by the output writer.
+        // Reloading makes each selection independent from the read-only lookup cache.
         var source = (SchLibrary)AltiumLibrary.OpenSchLibAsync(match.Path).GetAwaiter().GetResult();
         if (source[match.ComponentName] is not SchComponent selected)
             throw new InvalidDataException($"Bundled symbol '{match.ComponentName}' was not found.");
@@ -80,7 +85,7 @@ public sealed class UserSymbolLibraryResolver
     public IReadOnlyList<SymbolLibraryMatch> ListMasterSymbols(string masterPath)
     {
         if (!File.Exists(masterPath)) return [];
-        var library = (SchLibrary)AltiumLibrary.OpenSchLibAsync(masterPath).GetAwaiter().GetResult();
+        var library = LoadLibrary(masterPath);
         return library.Components.OfType<SchComponent>()
             .Select(symbol => new SymbolLibraryMatch(masterPath, "user-selected bundled symbol", symbol.Name))
             .OrderBy(match => match.ComponentName, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -128,7 +133,7 @@ public sealed class UserSymbolLibraryResolver
 
     private SymbolLibraryMatch? ResolveInMaster(EdaComponent component, string masterPath)
     {
-        var library = (SchLibrary)AltiumLibrary.OpenSchLibAsync(masterPath).GetAwaiter().GetResult();
+        var library = LoadLibrary(masterPath);
         var keys = SearchKeys(component).Where(key => key.Length >= 5).ToArray();
         foreach (var key in keys)
         {
@@ -147,6 +152,19 @@ public sealed class UserSymbolLibraryResolver
             return text.Contains(target, StringComparison.OrdinalIgnoreCase) && !text.Contains("ARRAY", StringComparison.OrdinalIgnoreCase) && !text.Contains("HOLDER", StringComparison.OrdinalIgnoreCase);
         });
         if (functional is not null) return new SymbolLibraryMatch(masterPath, $"bundled {target!.ToLowerInvariant()} symbol", functional.Name);
+
+        // Two-terminal quartz crystals have interchangeable terminals. A vendor-specific
+        // catalog drawing is safe to reuse only when its numbered pins match EasyEDA exactly;
+        // oscillators and four-terminal crystals still need a specific match or user choice.
+        if (target is null && LibraryFamily(component) == "CRYSTAL" && component.SymbolPins.Count == 2)
+        {
+            var expected = component.SymbolPins.Select(pin => pin.Number).OrderBy(value => value, StringComparer.Ordinal).ToArray();
+            var crystal = library.Components.OfType<SchComponent>().FirstOrDefault(symbol =>
+                symbol.Name.Contains("Crystal", StringComparison.OrdinalIgnoreCase) &&
+                symbol.Pins.Count == 2 &&
+                symbol.Pins.Select(pin => pin.Designator ?? "").OrderBy(value => value, StringComparer.Ordinal).SequenceEqual(expected));
+            if (crystal is not null) return new SymbolLibraryMatch(masterPath, "bundled two-terminal crystal", crystal.Name);
+        }
 
         // For other non-IC families, only auto-select when category and pin count
         // identify one unambiguous user symbol.  Ambiguous cases go to the picker.
@@ -203,6 +221,15 @@ public sealed class UserSymbolLibraryResolver
     }
 
     private static bool IsMasterLibrary(string path) => string.Equals(Path.GetFileName(path), "BundledUserSymbols.SchLib", StringComparison.OrdinalIgnoreCase);
+
+    private SchLibrary LoadLibrary(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        if (_libraryCache.TryGetValue(fullPath, out var cached)) return cached;
+        var loaded = (SchLibrary)AltiumLibrary.OpenSchLibAsync(fullPath).GetAwaiter().GetResult();
+        _libraryCache.Add(fullPath, loaded);
+        return loaded;
+    }
 }
 
 public sealed record SymbolLibraryMatch(string Path, string MatchKind, string? ComponentName = null);

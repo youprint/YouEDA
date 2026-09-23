@@ -5,7 +5,7 @@ using EasyEdaAltiumGrabber.Models;
 
 namespace EasyEdaAltiumGrabber.Services;
 
-/// <summary>Converts an EasyEDA footprint's tilde-delimited records into Altium millimetre primitives.</summary>
+/// <summary>Converts EasyEDA's tilde-delimited CAD records into format-neutral millimetre primitives.</summary>
 public sealed class Parser
 {
     // EasyEDA library coordinates are in 10-mil increments: 1 unit = 0.254 mm.
@@ -25,7 +25,7 @@ public sealed class Parser
         foreach (var record in shapeRecords)
             ParseRecord(record, component, originX, originY);
 
-        ParseSymbolPins(document.RootElement, component);
+        ParseSymbol(document.RootElement, component);
 
         if (component.Pads.Count == 0)
             throw new InvalidDataException("EasyEDA returned no PAD records for this footprint.");
@@ -54,23 +54,76 @@ public sealed class Parser
         }
     }
 
-    private static void ParseSymbolPins(JsonElement root, EdaComponent component)
+    private static void ParseSymbol(JsonElement root, EdaComponent component)
     {
-        // Symbol records reside in result.dataStr; packageDetail.dataStr is the footprint.
-        if (!root.TryGetProperty("result", out var result) || !result.TryGetProperty("dataStr", out var data) ||
+        if (!root.TryGetProperty("result", out var result)) return;
+        ParseSymbolUnit(result, component);
+        if (result.TryGetProperty("subparts", out var subparts) && subparts.ValueKind == JsonValueKind.Array)
+            foreach (var subpart in subparts.EnumerateArray()) ParseSymbolUnit(subpart, component);
+    }
+
+    private static void ParseSymbolUnit(JsonElement source, EdaComponent component)
+    {
+        if (!source.TryGetProperty("dataStr", out var data) ||
             !data.TryGetProperty("shape", out var shapes) || shapes.ValueKind != JsonValueKind.Array) return;
+        var (originX, originY) = GetOrigin(data);
+        var unit = new EdaSymbolUnit();
         foreach (var item in shapes.EnumerateArray())
         {
             var raw = item.GetString();
-            if (string.IsNullOrWhiteSpace(raw) || !raw.StartsWith("P~", StringComparison.OrdinalIgnoreCase)) continue;
-            var segments = raw.Split("^^", StringSplitOptions.None);
-            var settings = segments[0].Split('~');
-            if (settings.Length < 7) continue;
-            var name = segments.Length > 3 ? segments[3].Split('~') : [];
-            var anchor = name.Length > 5 ? name[5] : string.Empty;
-            var pinName = name.Length > 4 ? name[4] : string.Empty;
-            component.SymbolPins.Add(new EdaSymbolPin(settings[3], pinName, (int)Number(settings[2]), (int)Number(settings[6]), anchor));
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            var fields = raw.Split('~');
+            switch (fields[0].ToUpperInvariant())
+            {
+                case "P":
+                {
+                    var segments = raw.Split("^^", StringSplitOptions.None);
+                    var settings = segments[0].Split('~');
+                    if (settings.Length < 7) break;
+                    var name = segments.Length > 3 ? segments[3].Split('~') : [];
+                    var anchor = name.Length > 5 ? name[5] : string.Empty;
+                    var pinName = name.Length > 4 ? name[4] : string.Empty;
+                    // The leading pin coordinate is the electrical connection point;
+                    // the SVG path carries its length back toward the symbol body.
+                    var path = segments.Length > 2 ? segments[2] : string.Empty;
+                    var length = System.Text.RegularExpressions.Regex.Match(path, @"[hv]\s*(-?\d+(?:\.\d+)?)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    var pin = new EdaSymbolPin(settings[3], pinName, (int)Number(settings[2]), (int)Number(settings[6]), anchor)
+                    {
+                        Xmm = RelativeMm(settings[4], originX), Ymm = -RelativeMm(settings[5], originY),
+                        LengthMm = length.Success ? Mm(Math.Abs(Number(length.Groups[1].Value))) : 2.54
+                    };
+                    unit.Pins.Add(pin);
+                    component.SymbolPins.Add(pin);
+                    break;
+                }
+                case "R" when fields.Length > 6:
+                {
+                    var x = Number(fields[1]); var y = Number(fields[2]);
+                    unit.Graphics.Add(new EdaSymbolGraphic("RECT", [(Mm(x - originX), -Mm(y - originY)),
+                        (Mm(x + Number(fields[5]) - originX), -Mm(y + Number(fields[6]) - originY))],
+                        Mm(Number(fields.ElementAtOrDefault(8))), !string.Equals(fields.ElementAtOrDefault(10), "none", StringComparison.OrdinalIgnoreCase)));
+                    break;
+                }
+                case "C" when fields.Length > 3:
+                case "E" when fields.Length > 4:
+                {
+                    var radiusX = Number(fields[3]);
+                    var radiusY = fields[0].Equals("C", StringComparison.OrdinalIgnoreCase) ? radiusX : Number(fields[4]);
+                    unit.Graphics.Add(new EdaSymbolGraphic("ELLIPSE", [(RelativeMm(fields[1], originX), -RelativeMm(fields[2], originY)),
+                        (Mm(radiusX), Mm(radiusY))], Mm(Number(fields.ElementAtOrDefault(fields[0] == "C" ? 5 : 6))), false));
+                    break;
+                }
+                case "PL" or "PG" when fields.Length > 1:
+                {
+                    var points = ParsePoints(fields[1], originX, originY);
+                    if (points.Count > 1)
+                        unit.Graphics.Add(new EdaSymbolGraphic(fields[0].Equals("PG", StringComparison.OrdinalIgnoreCase) ? "POLYGON" : "POLYLINE",
+                            points, Mm(Number(fields.ElementAtOrDefault(3))), false));
+                    break;
+                }
+            }
         }
+        if (unit.Pins.Count > 0 || unit.Graphics.Count > 0) component.SymbolUnits.Add(unit);
     }
 
     private static void Populate3dModelMetadata(EdaComponent component, IEnumerable<string> shapeRecords, double originX, double originY)
@@ -185,16 +238,77 @@ public sealed class Parser
             component.Pads.Add(new EdaPad(
                 fields[8], RelativeMm(fields[2], originX), -RelativeMm(fields[3], originY),
                 Mm(fields[4]), Mm(fields[5]), Number(fields.ElementAtOrDefault(11)), fields[6],
-                Number(fields[9]) > 0, Mm(Number(fields[9]))));
+                Number(fields[9]) > 0 && !string.Equals(fields.ElementAtOrDefault(15), "N", StringComparison.OrdinalIgnoreCase),
+                2 * Mm(Number(fields[9])))
+            {
+                Shape = fields[1].ToUpperInvariant(),
+                SlotLengthMm = Mm(Number(fields.ElementAtOrDefault(13))),
+                PolygonPointsMm = ParsePoints(fields.ElementAtOrDefault(10) ?? "", originX, originY)
+            });
             return;
         }
 
-        if ((kind is "TRACK" or "SOLIDREGION") && fields.Length >= 5)
+        if (kind == "TRACK" && fields.Length >= 5)
         {
             var points = ParsePoints(fields[4], originX, originY);
             component.Shapes.Add(new EdaShape(
                 kind, fields.ElementAtOrDefault(2) ?? "TopLayer", points, Mm(Number(fields.ElementAtOrDefault(1)))));
+            return;
         }
+        if (kind == "CIRCLE" && fields.Length >= 6)
+        {
+            component.Shapes.Add(new EdaShape(kind, fields[5],
+                [(RelativeMm(fields[1], originX), -RelativeMm(fields[2], originY)), (Mm(fields[3]), 0)],
+                Mm(fields[4])));
+            return;
+        }
+        if (kind == "RECT" && fields.Length >= 9)
+        {
+            var x = Number(fields[1]); var y = Number(fields[2]);
+            component.Shapes.Add(new EdaShape(kind, fields[5],
+                [(Mm(x - originX), -Mm(y - originY)),
+                 (Mm(x + Number(fields[3]) - originX), -Mm(y + Number(fields[4]) - originY))], Mm(fields[8])));
+            return;
+        }
+        if (kind == "HOLE" && fields.Length >= 4)
+        {
+            component.Shapes.Add(new EdaShape(kind, "11",
+                [(RelativeMm(fields[1], originX), -RelativeMm(fields[2], originY)), (Mm(fields[3]), 0)], 0));
+            return;
+        }
+        if (kind == "SOLIDREGION" && fields.Length >= 5 && fields[4] is "solid" or "npth")
+        {
+            var points = ParseSvgPoints(fields[3], originX, originY);
+            if (points.Count >= 3) component.Shapes.Add(new EdaShape(kind, fields[1], points, 0));
+        }
+    }
+
+    private static IReadOnlyList<(double X, double Y)> ParseSvgPoints(string path, double originX, double originY)
+    {
+        var tokens = System.Text.RegularExpressions.Regex.Matches(path,
+            @"[MLHVZmlhvz]|[-+]?(?:\d*\.\d+|\d+\.?\d*)", System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+            .Select(match => match.Value).ToArray();
+        var result = new List<(double X, double Y)>();
+        var x = 0.0; var y = 0.0;
+        for (var i = 0; i < tokens.Length;)
+        {
+            var command = tokens[i++].ToUpperInvariant();
+            switch (command)
+            {
+                case "M" or "L" when i + 1 < tokens.Length:
+                    x = Number(tokens[i++]); y = Number(tokens[i++]); break;
+                case "H" when i < tokens.Length:
+                    x = Number(tokens[i++]); break;
+                case "V" when i < tokens.Length:
+                    y = Number(tokens[i++]); break;
+                case "Z":
+                    if (result.Count > 0 && result[0] != result[^1]) result.Add(result[0]);
+                    continue;
+                default: return result;
+            }
+            result.Add((Mm(x - originX), -Mm(y - originY)));
+        }
+        return result;
     }
 
     private static IReadOnlyList<(double X, double Y)> ParsePoints(string value, double originX, double originY)

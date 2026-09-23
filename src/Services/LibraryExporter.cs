@@ -11,13 +11,16 @@ namespace EasyEdaAltiumGrabber.Services;
 /// <summary>Exports per-part source artifacts and upserts native Altium libraries.</summary>
 public sealed class LibraryExporter
 {
+    public enum OutputFormat { Altium, KiCad, Both }
+
     public async Task<string> ExportImportPlanAsync(
         EdaComponent component,
         string outputDirectory,
         bool include3d = true,
         string? userSymbolDirectory = null,
         SymbolLibraryMatch? selectedSymbol = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        OutputFormat format = OutputFormat.Altium)
     {
         Directory.CreateDirectory(outputDirectory);
         // Keep raw data and a downloaded STEP beside each source part. The two Altium
@@ -54,31 +57,37 @@ public sealed class LibraryExporter
             modelStatus = $"The footprint was generated without a 3D model: {exception.Message}";
         }
 
-        var pcbLib = await new AltiumV2Exporter().UpsertPcbLibAsync(component, outputDirectory, model);
         var resolver = new UserSymbolLibraryResolver();
         var symbolMatch = selectedSymbol ?? resolver.Resolve(component, userSymbolDirectory, null);
-        string schLib;
-        string symbolStatus;
-        if (symbolMatch is null)
+        var selected = symbolMatch is null ? null : resolver.LoadSelectedComponent(symbolMatch);
+        string? pcbLib = null;
+        string? schLib = null;
+        string? kiCadLib = null;
+        var symbolStatus = symbolMatch is null
+            ? "Schematic symbol: generated from EasyEDA records."
+            : $"Schematic symbol: reused your {symbolMatch.MatchKind} from {symbolMatch.Path}.";
+        if (format is OutputFormat.Altium or OutputFormat.Both)
         {
-            schLib = await new AltiumSchExporter().UpsertEasyEdaSymbolAsync(component, outputDirectory);
-            symbolStatus = "Schematic symbol: generated from EasyEDA P pin records.";
+            pcbLib = await new AltiumV2Exporter().UpsertPcbLibAsync(component, outputDirectory, model);
+            if (selected is null)
+                schLib = await new AltiumSchExporter().UpsertEasyEdaSymbolAsync(component, outputDirectory);
+            else
+            {
+                selected.Name = component.LcscPartNumber;
+                selected.LibReference = component.LcscPartNumber;
+                selected.Comment = component.Name;
+                selected.DesignItemId = component.Properties.GetValueOrDefault("Manufacturer Part") ?? component.LcscPartNumber;
+                AltiumSchExporter.PrepareSymbol(selected, component);
+                schLib = await new AltiumSchExporter().UpsertSymbolAsync(selected, outputDirectory);
+            }
         }
-        else
+        if (format is OutputFormat.KiCad or OutputFormat.Both)
         {
-            var symbol = resolver.LoadSelectedComponent(symbolMatch);
-            // A generic/library symbol is retained exactly as drawn, but its entry in the
-            // output library is keyed by this LCSC part so different parts never overwrite it.
-            symbol.Name = component.LcscPartNumber;
-            symbol.LibReference = component.LcscPartNumber;
-            symbol.Comment = component.Name;
-            symbol.DesignItemId = component.Properties.GetValueOrDefault("Manufacturer Part") ?? component.LcscPartNumber;
-            schLib = await new AltiumSchExporter().UpsertSymbolAsync(symbol, outputDirectory);
-            symbolStatus = $"Schematic symbol: reused your {symbolMatch.MatchKind} from {symbolMatch.Path}.";
+            kiCadLib = await new KiCadLibraryExporter().UpsertAsync(component, outputDirectory, selected, model, ct);
         }
 
         await File.WriteAllTextAsync(Path.Combine(partDirectory, "README.txt"),
-            $"Shared native PcbLib: {pcbLib}.\nShared native SchLib: {schLib}.\n{symbolStatus}\n{modelStatus}\n", ct);
-        return pcbLib;
+            $"Shared native PcbLib: {pcbLib ?? "not requested"}.\nShared native SchLib: {schLib ?? "not requested"}.\nShared KiCad symbol library: {kiCadLib ?? "not requested"}.\n{symbolStatus}\n{modelStatus}\n", ct);
+        return pcbLib ?? kiCadLib!;
     }
 }
