@@ -13,6 +13,8 @@ Altium output uses two native shared libraries:
 - `youeda.PcbLib` — footprint, copper pads, silkscreen, and embedded STEP model when EasyEDA supplies one.
 - `youeda.SchLib` — schematic symbol selected from the bundled common-symbol catalog, or generated from EasyEDA pin records for IC/MCU-class parts.
 
+Each Altium symbol carries a native `PCBLIB` model link to the matching LCSC-named footprint. The schematic library uses a light sheet background and visible designator/comment labels; resistors and capacitors store the EasyEDA value as a hidden `Value` parameter referenced by the comment, while diodes use the manufacturer part number when available. Re-import an existing part to refresh these fields in an older `youeda.SchLib`.
+
 Each import **upserts** the LCSC part number into those same two files. Existing components stay in place; importing the same LCSC code again refreshes only that component.
 
 KiCad output uses `youeda.kicad_sym`, `youeda.pretty/<LCSC>.kicad_mod`, and, when available, `youeda.3dshapes/<LCSC>.step`. The output folder also gets `sym-lib-table` and `fp-lib-table` if those files do not already exist. Re-importing a part replaces its symbol and footprint without disturbing other parts. For portable 3D links, use the output folder as the KiCad project folder, or copy these files and folders together into a project folder.
@@ -108,7 +110,7 @@ Compress-Archive -Path .\dist\YouEDA\* -DestinationPath .\dist\YouEDA-1.0.0-win-
 
 ## KiCad exporter smoke test
 
-The repository includes an offline test for EasyEDA parsing, multi-unit symbols, KiCad upsert, 3D paths, and Altium drilled-pad round-tripping:
+The repository includes an offline test for EasyEDA parsing, multi-unit symbols, KiCad upsert, 3D paths, Altium drilled-pad round-tripping, and native schematic labels/footprint links for resistor, capacitor, and diode examples:
 
 ```powershell
 dotnet run --project .\tests\KiCadSmoke\KiCadSmoke.csproj
