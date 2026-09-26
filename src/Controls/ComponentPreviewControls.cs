@@ -71,7 +71,13 @@ public sealed class SymbolPreviewControl : FrameworkElement
     {
         base.OnRender(drawing);
         drawing.DrawRectangle(Brushes.White, null, new Rect(RenderSize));
-        var pinCount = Math.Max(2, Component?.Pads.Count ?? 2);
+        if (Component is null)
+        {
+            DrawSymbolLabel(drawing, "Select a library item", Math.Max(8, RenderSize.Width / 2 - 62), RenderSize.Height / 2 - 8);
+            return;
+        }
+        var pins = Component?.SymbolPins ?? [];
+        var pinCount = Math.Max(2, pins.Count > 0 ? pins.Count : Component?.Pads.Count ?? 2);
         var body = new Rect(RenderSize.Width * .28, 18, RenderSize.Width * .44, Math.Max(40, RenderSize.Height - 36));
         var pen = new Pen(new SolidColorBrush(Color.FromRgb(145, 45, 45)), 2);
         drawing.DrawRectangle(null, pen, body);
@@ -82,7 +88,15 @@ public sealed class SymbolPreviewControl : FrameworkElement
             var x1 = left ? body.Left - 19 : body.Right;
             var x2 = left ? body.Left : body.Right + 19;
             drawing.DrawLine(pen, new Point(x1, y), new Point(x2, y));
-            DrawSymbolLabel(drawing, (index + 1).ToString(), left ? x1 - 14 : x2 + 4, y - 8);
+            var pin = index < pins.Count ? pins[index] : null;
+            var number = pin?.Number ?? (index + 1).ToString(CultureInfo.InvariantCulture);
+            var name = pin?.Name ?? "";
+            DrawSymbolLabel(drawing, number, left ? x1 - 18 : x2 + 5, y - 8);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                var label = TrimLabel(name, 18);
+                DrawSymbolLabel(drawing, label, left ? body.Left + 7 : body.Right - MeasureLabel(label) - 7, y - 8);
+            }
         }
         DrawSymbolLabel(drawing, Component?.LcscPartNumber ?? "PART", body.Left + 7, body.Top + body.Height / 2 - 8);
     }
@@ -90,4 +104,7 @@ public sealed class SymbolPreviewControl : FrameworkElement
     private static void DrawSymbolLabel(DrawingContext drawing, string label, double x, double y) =>
         drawing.DrawText(new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
             new Typeface("Segoe UI"), 12, new SolidColorBrush(Color.FromRgb(80, 45, 45)), 1), new Point(x, y));
+
+    private static double MeasureLabel(string label) => label.Length * 7.1;
+    private static string TrimLabel(string label, int maximum) => label.Length <= maximum ? label : label[..(maximum - 1)] + "…";
 }

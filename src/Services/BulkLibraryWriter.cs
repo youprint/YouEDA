@@ -72,12 +72,13 @@ public sealed class BulkLibraryWriter
         else
         {
             symbol = _resolver.LoadSelectedComponent(match);
-            symbol.Name = component.LcscPartNumber;
-            symbol.LibReference = component.LcscPartNumber;
             symbol.Comment = component.Name;
-            symbol.DesignItemId = component.Properties.GetValueOrDefault("Manufacturer Part") ?? component.LcscPartNumber;
         }
         AltiumSchExporter.PrepareSymbol(symbol, component);
+        // Update existing catalogs written by older releases without retaining their LCSC row.
+        _sch!.Remove(component.LcscPartNumber);
+        _sch.Remove(component.Name);
+        AltiumSchExporter.MigrateUnsafeLibraryNames(_sch);
         _schExporter.Upsert(_sch!, symbol);
     }
 

@@ -1,0 +1,5 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <SolidColorBrush x:Key="Bg" Color="#0F1B2B"/><SolidColorBrush x:Key="Panel" Color="#142B4D"/><SolidColorBrush x:Key="PanelDark" Color="#0B1F3B"/><SolidColorBrush x:Key="Accent" Color="#2563EB"/><SolidColorBrush x:Key="AccentHover" Color="#3B82F6"/>
+ <SolidColorBrush x:Key="TextPrimary" Color="#E5E7EB"/><SolidColorBrush x:Key="TextMuted" Color="#A8B4C5"/><SolidColorBrush x:Key="InputBackground" Color="#10243E"/><SolidColorBrush x:Key="InputBorder" Color="#294667"/><SolidColorBrush x:Key="ButtonBackground" Color="#1A365D"/><SolidColorBrush x:Key="ButtonHover" Color="#234A7A"/>
+ <SolidColorBrush x:Key="GridBackground" Color="#10243E"/><SolidColorBrush x:Key="GridAlt" Color="#132B49"/><SolidColorBrush x:Key="GridHeader" Color="#1B3A62"/><SolidColorBrush x:Key="GridLines" Color="#294667"/><SolidColorBrush x:Key="GridSelection" Color="#2563EB"/><SolidColorBrush x:Key="PreviewBackground" Color="#081526"/>
+</ResourceDictionary>

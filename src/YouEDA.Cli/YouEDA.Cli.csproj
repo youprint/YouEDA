@@ -16,11 +16,17 @@
     <!-- Reuse the production parser/exporter so GUI and CLI create the same native libraries. -->
     <Compile Include="..\Models\**\*.cs" Link="Models\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\Services\AltiumSchExporter.cs" Link="Services\AltiumSchExporter.cs" />
+    <Compile Include="..\Services\AltiumFootprintNaming.cs" Link="Services\AltiumFootprintNaming.cs" />
     <Compile Include="..\Services\AltiumV2Exporter.cs" Link="Services\AltiumV2Exporter.cs" />
     <Compile Include="..\Services\BulkLibraryWriter.cs" Link="Services\BulkLibraryWriter.cs" />
     <Compile Include="..\Services\EasyEda3dModelDownloader.cs" Link="Services\EasyEda3dModelDownloader.cs" />
     <Compile Include="..\Services\LcscScraper.cs" Link="Services\LcscScraper.cs" />
+    <Compile Include="..\Services\JlcPcbPricingService.cs" Link="Services\JlcPcbPricingService.cs" />
     <Compile Include="..\Services\LibraryExporter.cs" Link="Services\LibraryExporter.cs" />
+    <Compile Include="..\Services\AltiumExportBatch.cs" Link="Services\AltiumExportBatch.cs" />
+    <Compile Include="..\Services\ModelDownloadBatch.cs" Link="Services\ModelDownloadBatch.cs" />
+    <Compile Include="..\Services\ImportDiagnostics.cs" Link="Services\ImportDiagnostics.cs" />
+    <Compile Include="..\Services\ModelAssetCache.cs" Link="Services\ModelAssetCache.cs" />
     <Compile Include="..\Services\KiCadLibraryExporter.cs" Link="Services\KiCadLibraryExporter.cs" />
     <Compile Include="..\Services\Parser.cs" Link="Services\Parser.cs" />
     <Compile Include="..\Services\UserSymbolLibraryResolver.cs" Link="Services\UserSymbolLibraryResolver.cs" />

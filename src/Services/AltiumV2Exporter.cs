@@ -57,12 +57,15 @@ public sealed class AltiumV2Exporter
     public void Upsert(PcbLibrary library, EdaComponent source, Downloaded3dModel? model = null)
     {
         var footprintName = AltiumFootprintNaming.NameFor(source);
+        // Build first: a failed conversion must not remove an earlier footprint from a
+        // long-lived batch library that will later be checkpointed with other successes.
+        var replacement = BuildComponent(source, footprintName, library, model).Build();
         // Remove an entry written by older YouEDA versions under its LCSC number when this part
         // is re-imported, then upsert the EasyEDA-named footprint. Identical package names are
         // shared library entries rather than duplicate per-part footprints.
         library.Remove(source.LcscPartNumber);
         library.Remove(footprintName);
-        library.Add(BuildComponent(source, footprintName, library, model).Build());
+        library.Add(replacement);
     }
 
     private static ComponentBuilder BuildComponent(EdaComponent source, string footprintName, PcbLibrary library, Downloaded3dModel? model)
@@ -109,9 +112,21 @@ public sealed class AltiumV2Exporter
             }
         }
 
-        // EasyEDA rectangles and circles are genuine footprint artwork, not pad copper.
-        foreach (var rect in source.Shapes.Where(shape => shape.Kind == "RECT" && shape.PointsMm.Count > 1 &&
-            shape.Layer is "3" or "4" or "99"))
+        foreach (var arc in source.Shapes.Where(shape => shape.Kind == "ARC" && shape.PointsMm.Count > 0 && shape.RadiusMm > 0))
+        {
+            var center = arc.PointsMm[0];
+            component.AddArc(arcBuilder => arcBuilder
+                .Center(Coord.FromMm(center.X), Coord.FromMm(center.Y))
+                .Radius(Coord.FromMm(arc.RadiusMm))
+                .Angles(arc.StartAngleDeg, arc.EndAngleDeg)
+                .Width(Coord.FromMm(arc.StrokeMm))
+                .Layer(MapEasyEdaLayer(arc.Layer)));
+        }
+
+        // Preserve EasyEDA primitive artwork on its original semantic layer.  Passive
+        // footprints commonly use these for silkscreen, paste/mask openings and
+        // component-shape/lead-shape/marking artwork.
+        foreach (var rect in source.Shapes.Where(shape => shape.Kind == "RECT" && shape.PointsMm.Count > 1))
         {
             var a = rect.PointsMm[0]; var z = rect.PointsMm[1];
             var corners = new[] { a, (z.X, a.Y), z, (a.X, z.Y), a };
@@ -122,8 +137,7 @@ public sealed class AltiumV2Exporter
                     .Width(Coord.FromMm(Math.Max(.01, rect.StrokeMm)))
                     .Layer(MapEasyEdaLayer(rect.Layer)));
         }
-        foreach (var circle in source.Shapes.Where(shape => shape.Kind == "CIRCLE" && shape.PointsMm.Count > 1 &&
-            shape.Layer is "3" or "4" or "99"))
+        foreach (var circle in source.Shapes.Where(shape => shape.Kind == "CIRCLE" && shape.PointsMm.Count > 1))
         {
             var center = circle.PointsMm[0];
             component.AddArc(arc => arc.Center(Coord.FromMm(center.X), Coord.FromMm(center.Y))
@@ -131,59 +145,51 @@ public sealed class AltiumV2Exporter
                 .Width(Coord.FromMm(Math.Max(.01, circle.StrokeMm)))
                 .Layer(MapEasyEdaLayer(circle.Layer)));
         }
-        foreach (var outline in source.Shapes.Where(shape => shape.Kind == "SOLIDREGION" && shape.Layer == "99" && shape.PointsMm.Count > 2))
-        {
-            for (var i = 1; i < outline.PointsMm.Count; i++)
-            {
-                var a = outline.PointsMm[i - 1]; var z = outline.PointsMm[i];
-                component.AddTrack(trackBuilder => trackBuilder
-                    .From(Coord.FromMm(a.X), Coord.FromMm(a.Y)).To(Coord.FromMm(z.X), Coord.FromMm(z.Y))
-                    .Width(Coord.FromMm(.05)).Layer(57)); // Mechanical 1 / courtyard
-            }
-        }
+        // EasyEDA's SOLIDREGION records include editor-only component, lead, paste,
+        // and mask support layers.  EasyEDALoader does not turn these into extra
+        // outline tracks; doing so added four non-source Mechanical-1 segments around
+        // every passive footprint.  Keep the actual TRACK artwork above, and let
+        // Altium generate mask/paste from the pads.
 
-        if (model is not null)
-        {
-            // Embed the STEP data and add the mandatory body-to-model link. The footprint is
-            // already normalised about (0,0), so the EasyEDA model origin is the same point.
-            var modelId = Guid.TryParseExact(model.Source.Uuid, "N", out var easyEdaId)
-                ? easyEdaId.ToString("B").ToUpperInvariant()
-                : Guid.NewGuid().ToString("B").ToUpperInvariant();
-            // If this part is refreshed, replace only its identical EasyEDA model record.
-            library.Models.RemoveAll(item => string.Equals(item.Id, modelId, StringComparison.OrdinalIgnoreCase));
-            var embeddedModel = new PcbModel
-            {
-                Id = modelId,
-                Name = model.FileName,
-                IsEmbedded = true,
-                ModelSource = "Undefined",
-                StepData = model.StepData
-            };
-            embeddedModel.RecomputeChecksum();
-            library.Models.Add(embeddedModel);
-
-            var halfWidth = model.Source.WidthMm > 0 ? model.Source.WidthMm / 2 : 0.5;
-            var halfHeight = model.Source.HeightMm > 0 ? model.Source.HeightMm / 2 : 0.5;
-            component.AddComponentBody(body => body
-                .OnLayer("MECHANICAL1")
-                .WithName(model.FileName)
-                // Altium treats a model-based body as a closed contour; an empty outline
-                // is tolerated by readers but rejected by the native PcbLib editor.
-                .Kind(0)
-                .ShapeBased(false)
-                .ModelId(modelId)
-                .OverallHeight(Coord.FromMm(model.HeightMm))
-                .AddPoint(Coord.FromMm(model.Source.Xmm - halfWidth), Coord.FromMm(model.Source.Ymm - halfHeight))
-                .AddPoint(Coord.FromMm(model.Source.Xmm + halfWidth), Coord.FromMm(model.Source.Ymm - halfHeight))
-                .AddPoint(Coord.FromMm(model.Source.Xmm + halfWidth), Coord.FromMm(model.Source.Ymm + halfHeight))
-                .AddPoint(Coord.FromMm(model.Source.Xmm - halfWidth), Coord.FromMm(model.Source.Ymm + halfHeight))
-                .At2D(Coord.FromMm(model.Source.Xmm), Coord.FromMm(model.Source.Ymm))
-                .Rotation2D(0)
-                .Rotation3D(model.Source.RotationXDeg, model.Source.RotationYDeg, model.Source.RotationZDeg)
-                .OffsetZ(Coord.FromMm(model.Source.Zmm + model.ZOffsetMm)));
-        }
+        if (model is not null) AddEasyEdaModel(component.Build(), library, model);
 
         return component;
+    }
+
+    /// <summary>Embeds an EasyEDA STEP model for both generated and source-library footprints.</summary>
+    private static void AddEasyEdaModel(PcbComponent component, PcbLibrary library, Downloaded3dModel model)
+    {
+        // The footprint is normalised about (0,0), so the EasyEDA model origin is the same point.
+        var modelId = Guid.TryParseExact(model.Source.Uuid, "N", out var easyEdaId)
+            ? easyEdaId.ToString("B").ToUpperInvariant()
+            : Guid.NewGuid().ToString("B").ToUpperInvariant();
+        library.Models.RemoveAll(item => string.Equals(item.Id, modelId, StringComparison.OrdinalIgnoreCase));
+        var embeddedModel = new PcbModel
+        {
+            Id = modelId, Name = model.FileName, IsEmbedded = true,
+            ModelSource = "Undefined", StepData = model.StepData
+        };
+        embeddedModel.RecomputeChecksum();
+        library.Models.Add(embeddedModel);
+
+        var halfWidth = model.Source.WidthMm > 0 ? model.Source.WidthMm / 2 : 0.5;
+        var halfHeight = model.Source.HeightMm > 0 ? model.Source.HeightMm / 2 : 0.5;
+        var body = PcbComponentBody.Create()
+            .OnLayer("MECHANICAL1")
+            .WithName(model.FileName)
+            // Altium treats a model-based body as a closed contour; an empty outline
+            // is tolerated by readers but rejected by the native PcbLib editor.
+            .Kind(0).ShapeBased(false).ModelId(modelId)
+            .OverallHeight(Coord.FromMm(model.HeightMm))
+            .AddPoint(Coord.FromMm(model.Source.Xmm - halfWidth), Coord.FromMm(model.Source.Ymm - halfHeight))
+            .AddPoint(Coord.FromMm(model.Source.Xmm + halfWidth), Coord.FromMm(model.Source.Ymm - halfHeight))
+            .AddPoint(Coord.FromMm(model.Source.Xmm + halfWidth), Coord.FromMm(model.Source.Ymm + halfHeight))
+            .AddPoint(Coord.FromMm(model.Source.Xmm - halfWidth), Coord.FromMm(model.Source.Ymm + halfHeight))
+            .At2D(Coord.FromMm(model.Source.Xmm), Coord.FromMm(model.Source.Ymm)).Rotation2D(0)
+            .Rotation3D(model.Source.RotationXDeg, model.Source.RotationYDeg, model.Source.RotationZDeg)
+            .OffsetZ(Coord.FromMm(model.Source.Zmm + model.ZOffsetMm))
+            .Build();
+        component.AddComponentBody(body);
     }
 
     private static int MapCopperLayer(string easyEdaLayer) => easyEdaLayer == "2" ||
@@ -198,7 +204,23 @@ public sealed class AltiumV2Exporter
         // accidentally placed silkscreen on Mid-Layer 20, which appears purple.
         "3" or "TopSilkLayer" => 33,
         "4" or "BottomSilkLayer" => 34,
-        "99" => 57, // Mechanical 1
+        "5" or "TopPasteMaskLayer" => 35,
+        "6" or "BottomPasteMaskLayer" => 36,
+        "7" or "TopSolderMaskLayer" => 37,
+        "8" or "BottomSolderMaskLayer" => 38,
+        "10" or "BoardOutLine" => 57,
+        "13" or "TopAssembly" => 57,
+        "14" or "BottomAssembly" => 58,
+        "15" or "Mechanical" => 59,
+        // EasyEDA's library-only component artwork layers have no exact Altium
+        // counterparts; retain them on separate mechanical layers instead of dropping
+        // them or rendering them as copper.
+        "99" or "ComponentShapeLayer" => 57,
+        "100" or "LeadShapeLayer" => 58,
+        // Match EasyEDALoader: component/pin marking is on Mechanical 11, not on the
+        // Top Overlay silkscreen.  Otherwise a marker circle appears as an erroneous
+        // extra yellow silkscreen dot beside passive pad 1.
+        "101" or "ComponentMarkingLayer" => 67,
         _ => 33
     };
 }

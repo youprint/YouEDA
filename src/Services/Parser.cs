@@ -14,21 +14,26 @@ public sealed class Parser
     public EdaComponent Parse(string partNumber, string rawJson)
     {
         using var document = JsonDocument.Parse(rawJson);
-        var footprintData = FindFootprintData(document.RootElement)
-            ?? throw new InvalidDataException("EasyEDA returned no public footprint data for this part.");
-        var (originX, originY) = GetOrigin(footprintData);
         var component = new EdaComponent { LcscPartNumber = partNumber };
         PopulateSymbolMetadata(document.RootElement, component);
-        var shapeRecords = FindShapeRecords(footprintData).ToArray();
-        Populate3dModelMetadata(component, shapeRecords, originX, originY);
+        var footprintData = FindFootprintData(document.RootElement);
+        if (footprintData is not null)
+        {
+            var (originX, originY) = GetOrigin(footprintData.Value);
+            var shapeRecords = FindShapeRecords(footprintData.Value).ToArray();
+            Populate3dModelMetadata(component, shapeRecords, originX, originY);
 
-        foreach (var record in shapeRecords)
-            ParseRecord(record, component, originX, originY);
+            foreach (var record in shapeRecords)
+                ParseRecord(record, component, originX, originY);
+        }
 
         ParseSymbol(document.RootElement, component);
 
-        if (component.Pads.Count == 0)
-            throw new InvalidDataException("EasyEDA returned no PAD records for this footprint.");
+        // Some public records contain a fully usable schematic symbol but no packageDetail/PAD
+        // records. Keep those parts: callers export their symbol and metadata only, never a
+        // fabricated footprint. A payload with neither is still not importable.
+        if (component.SymbolPins.Count == 0 && component.SymbolUnits.Count == 0)
+            throw new InvalidDataException("EasyEDA returned no schematic symbol data for this part.");
         return component;
     }
 
@@ -91,6 +96,7 @@ public sealed class Parser
                     var length = System.Text.RegularExpressions.Regex.Match(path, @"[hv]\s*(-?\d+(?:\.\d+)?)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     var pin = new EdaSymbolPin(settings[3], pinName, (int)Number(settings[2]), (int)Number(settings[6]), anchor)
                     {
+                        ShowName = name.Length == 0 || name[0] is not "0" and not "hide",
                         Xmm = RelativeMm(settings[4], originX), Ymm = -RelativeMm(settings[5], originY),
                         LengthMm = length.Success ? Mm(Math.Abs(Number(length.Groups[1].Value))) : 2.54
                     };
@@ -212,6 +218,18 @@ public sealed class Parser
 
     private static (double X, double Y) GetOrigin(JsonElement dataStr)
     {
+        // EasyEDA footprints carry an explicit BBox that defines their local canvas.
+        // This is the coordinate reference used by EasyEDALoader and by EasyEDA's own
+        // footprint editor: translate to the BBox centre and invert Y.  `head.x/y` is
+        // only document metadata; it is frequently the same value, but it is not a
+        // reliable footprint origin for every library item.
+        if (dataStr.TryGetProperty("BBox", out var boundingBox) && boundingBox.ValueKind == JsonValueKind.Object)
+        {
+            var width = Number(boundingBox, "width");
+            var height = Number(boundingBox, "height");
+            if (width > 0 && height > 0)
+                return (Number(boundingBox, "x") + width / 2, Number(boundingBox, "y") + height / 2);
+        }
         if (dataStr.TryGetProperty("head", out var head) && head.ValueKind == JsonValueKind.Object)
             return (Number(head, "x"), Number(head, "y"));
         return (0, 0);
@@ -257,6 +275,17 @@ public sealed class Parser
                 kind, fields.ElementAtOrDefault(2) ?? "TopLayer", points, Mm(Number(fields.ElementAtOrDefault(1)))));
             return;
         }
+        if (kind == "ARC" && fields.Length >= 5 && TryParsePcbArc(fields[4], originX, originY, out var arc))
+        {
+            component.Shapes.Add(new EdaShape(kind, fields.ElementAtOrDefault(2) ?? "TopSilkLayer",
+                [(arc.CenterXmm, arc.CenterYmm)], Mm(Number(fields.ElementAtOrDefault(1))))
+            {
+                RadiusMm = arc.RadiusMm,
+                StartAngleDeg = arc.StartAngleDeg,
+                EndAngleDeg = arc.EndAngleDeg
+            });
+            return;
+        }
         if (kind == "CIRCLE" && fields.Length >= 6)
         {
             component.Shapes.Add(new EdaShape(kind, fields[5],
@@ -278,6 +307,9 @@ public sealed class Parser
                 [(RelativeMm(fields[1], originX), -RelativeMm(fields[2], originY)), (Mm(fields[3]), 0)], 0));
             return;
         }
+        // Solid regions are used by EasyEDA for package artwork as well as explicit
+        // paste and solder-mask apertures.  Keep every native region and its layer;
+        // reducing them to a Mechanical-1 outline changes the generated footprint.
         if (kind == "SOLIDREGION" && fields.Length >= 5 && fields[4] is "solid" or "npth")
         {
             var points = ParseSvgPoints(fields[3], originX, originY);
@@ -313,6 +345,68 @@ public sealed class Parser
         return result;
     }
 
+    // EasyEDA PCB ARC records contain a compact SVG path:
+    // M startX startY A rx ry rotation largeArc sweep endX endY.
+    // This follows the same SVG-to-circle conversion used by EasyEDALoader, then
+    // performs its Y-axis inversion and sweep reversal for Altium coordinates.
+    private static bool TryParsePcbArc(string path, double originX, double originY,
+        out (double CenterXmm, double CenterYmm, double RadiusMm, double StartAngleDeg, double EndAngleDeg) result)
+    {
+        result = default;
+        var values = System.Text.RegularExpressions.Regex.Matches(path,
+                @"[-+]?(?:\d*\.\d+|\d+\.?\d*)", System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+            .Select(match => Number(match.Value)).ToArray();
+        if (values.Length < 9) return false;
+
+        var startX = values[0]; var startY = values[1];
+        var radiusX = Math.Abs(values[2]); var radiusY = Math.Abs(values[3]);
+        var rotationDeg = values[4];
+        var largeArc = Math.Abs(values[5]) > .5;
+        var sweep = Math.Abs(values[6]) > .5;
+        var endX = values[7]; var endY = values[8];
+        if (radiusX <= 0 || radiusY <= 0) return false;
+
+        var angle = rotationDeg % 360 * Math.PI / 180;
+        var halfDx = (startX - endX) / 2; var halfDy = (startY - endY) / 2;
+        var cos = Math.Cos(angle); var sin = Math.Sin(angle);
+        var x1 = cos * halfDx + sin * halfDy;
+        var y1 = -sin * halfDx + cos * halfDy;
+        var radiusXSquared = radiusX * radiusX; var radiusYSquared = radiusY * radiusY;
+        var radiiCheck = x1 * x1 / radiusXSquared + y1 * y1 / radiusYSquared;
+        if (radiiCheck > 1)
+        {
+            var scale = Math.Sqrt(radiiCheck);
+            radiusX *= scale; radiusY *= scale;
+            radiusXSquared = radiusX * radiusX; radiusYSquared = radiusY * radiusY;
+        }
+        var denominator = radiusXSquared * y1 * y1 + radiusYSquared * x1 * x1;
+        var numerator = radiusXSquared * radiusYSquared - radiusXSquared * y1 * y1 - radiusYSquared * x1 * x1;
+        var coefficient = (largeArc == sweep ? -1 : 1) * Math.Sqrt(Math.Max(0, denominator == 0 ? 0 : numerator / denominator));
+        var centerX1 = coefficient * radiusX * y1 / radiusY;
+        var centerY1 = coefficient * -radiusY * x1 / radiusX;
+        var centerX = (startX + endX) / 2 + cos * centerX1 - sin * centerY1;
+        var centerY = (startY + endY) / 2 + sin * centerX1 + cos * centerY1;
+        var startAngle = NormalizeAngle(Math.Atan2(startY - centerY, startX - centerX) * 180 / Math.PI);
+        var endAngle = NormalizeAngle(Math.Atan2(endY - centerY, endX - centerX) * 180 / Math.PI);
+        if (sweep && endAngle < startAngle) endAngle += 360;
+        if (!sweep && endAngle > startAngle) endAngle -= 360;
+
+        // Invert the SVG/EasyEDA Y axis.  Clockwise SVG arcs reverse their start/end
+        // order in Altium, precisely as EasyEDALoader's EeFootprintArc does.
+        var altiumStart = sweep ? NormalizeAngle(360 - endAngle) : NormalizeAngle(360 - startAngle);
+        var altiumEnd = sweep ? NormalizeAngle(360 - startAngle) : NormalizeAngle(360 - endAngle);
+        result = (RelativeMm(centerX, originX),
+            -RelativeMm(centerY, originY),
+            Mm((radiusX + radiusY) / 2), altiumStart, altiumEnd);
+        return true;
+    }
+
+    private static double NormalizeAngle(double degrees)
+    {
+        var normalized = degrees % 360;
+        return normalized < 0 ? normalized + 360 : normalized;
+    }
+
     private static IReadOnlyList<(double X, double Y)> ParsePoints(string value, double originX, double originY)
     {
         var fields = value.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries);
@@ -327,4 +421,5 @@ public sealed class Parser
     private static double Mm(string value) => Number(value) * EasyEdaUnitToMm;
     private static double Mm(double value) => value * EasyEdaUnitToMm;
     private static double RelativeMm(string value, double origin) => (Number(value) - origin) * EasyEdaUnitToMm;
+    private static double RelativeMm(double value, double origin) => (value - origin) * EasyEdaUnitToMm;
 }
